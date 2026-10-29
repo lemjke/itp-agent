@@ -1,0 +1,761 @@
+{
+  "model": "qwen2.5:7b",
+  "summary": {
+    "scenarios": 16,
+    "scenarios_correct": 13,
+    "precision": 0.8571428571428571,
+    "recall": 0.6666666666666666,
+    "f1": 0.75,
+    "category_accuracy": 1.0,
+    "requirement_accuracy": 1.0,
+    "ungrounded_findings": 1,
+    "tool_coverage": 0.8875,
+    "negatives_clean": 3,
+    "negatives": 3,
+    "mean_seconds": 22.60625,
+    "errors": 0
+  },
+  "rows": [
+    {
+      "id": "S01",
+      "question": "Что не так с ИТП-3 за последнюю неделю?",
+      "error": null,
+      "expected": 2,
+      "found": 2,
+      "tp": 2,
+      "category_ok": 2,
+      "requirement_ok": 2,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 37.6,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-3",
+            "start": "2026-02-21",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "ИТП-3 за последнюю неделю имеет две проблемы.",
+        "findings": [
+          {
+            "substation": "ИТП-3",
+            "parameter": "t2",
+            "start": "2026-02-21 00:00",
+            "end": "2026-02-28 03:00",
+            "what": "Обратка выше графика: в среднем +13,1% (макс. 14,6%, норма — не более +5%). Подача в это время +0,0% от графика. Расход +13,5% к предыдущим дням.",
+            "category": "regime_violation",
+            "hypothesis": "Разрегулировка системы отопления потребителя (перерасход теплоносителя)",
+            "requirement_code": "T2_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511)"
+          },
+          {
+            "substation": "ИТП-3",
+            "parameter": "t_dhw",
+            "start": "2026-02-26 03:00",
+            "end": "2026-02-26 20:00",
+            "what": "Показание «температура ГВС, °C» не менялось, держится на 64,56°C.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема измерений или связи",
+            "requirement_code": "DATA_VALIDITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S02",
+      "question": "Проверь ИТП-1 и ИТП-5 за последнюю неделю",
+      "error": null,
+      "expected": 2,
+      "found": 2,
+      "tp": 2,
+      "category_ok": 2,
+      "requirement_ok": 2,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 43.8,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-1",
+            "start": "2026-02-22",
+            "end": "2026-02-28"
+          }
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-5",
+            "start": "2026-02-22",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Проверка ИТП-1 и ИТП-5 за последнюю неделю.",
+        "findings": [
+          {
+            "substation": "ИТП-1",
+            "parameter": "t1",
+            "start": "2026-02-22 07:00",
+            "end": "2026-02-24 22:00",
+            "what": "Подача выше графика: в среднем +8,4 % от графика (макс. 9,7 %). Обратка в это время -1,7 % от графика — почти в норме. Расход +3,2 % к предыдущим дням. Отклонение стабильное по величине (не растёт).",
+            "category": "sensor_fault",
+            "hypothesis": "Смещение показаний датчика t1",
+            "requirement_code": "T1_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511) — пункт уточнить"
+          },
+          {
+            "substation": "ИТП-5",
+            "parameter": "t1",
+            "start": "2026-02-27 15:00",
+            "end": "2026-02-27 15:00",
+            "what": "Одиночный выброс «температура подачи, °C»: 64,9 при обычном уровне около 93,2.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема измерений или связь",
+            "requirement_code": "DATA_VALIDITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S03",
+      "question": "Проверь все тепловые пункты за последние три дня",
+      "error": null,
+      "expected": 4,
+      "found": 1,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 0,
+      "coverage": 0.2,
+      "correct": false,
+      "seconds": 29.8,
+      "missed": [
+        "ИТП-2 underheat 25.02 00:00",
+        "ИТП-3 high_return 21.02 00:00",
+        "ИТП-3 frozen 26.02 03:00",
+        "ИТП-5 spike 27.02 15:00"
+      ],
+      "extra": [
+        "ИТП-1 t1 2026-02-22 07:00"
+      ],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-1",
+            "start": "2026-02-22",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "ИТП-1 за период с 22 по 28 февраля 2026 года показало отклонение температуры подачи от графика.",
+        "findings": [
+          {
+            "substation": "ИТП-1",
+            "parameter": "t1",
+            "start": "2026-02-22 07:00",
+            "end": "2026-02-24 22:00",
+            "what": "Подача выше графика: в среднем +8,4 % от графика (макс. 9,7 %). Обратка в это время -1,7 % от графика — почти в норме. Расход +3,2 % к предыдущим дням. Отклонение стабильное по величине (не растёт).",
+            "category": "sensor_fault",
+            "hypothesis": "дрейф датчика t1",
+            "requirement_code": "T1_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511) — пункт уточнить"
+          }
+        ],
+        "recommendations": [
+          "Проверить состояние датчика t1 и его настройки."
+        ]
+      }
+    },
+    {
+      "id": "S04",
+      "question": "Что было с ИТП-5 вчера?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 21.1,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-5",
+            "start": "2026-02-27",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Вчера с ИТП-5 произошёл одиночный выброс температуры подачи (t1) в 15:00, значение 64.9 °C при обычном уровне около 93.2 °C.",
+        "findings": [
+          {
+            "substation": "ИТП-5",
+            "parameter": "t1",
+            "start": "2026-02-27 15:00",
+            "end": "2026-02-27 15:00",
+            "what": "Одиночный выброс «температура подачи, °C»: 64.9 при обычном уровне около 93.2.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема измерений или связи",
+            "requirement_code": "DATA_VALIDITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S05",
+      "question": "Что происходило на ИТП-2 с 20 по 28 февраля?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 29.4,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-2",
+            "start": "2026-02-20",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "С 20 по 28 февраля на ИТП-2 произошло регулирование системы отопления.",
+        "findings": [
+          {
+            "substation": "ИТП-2",
+            "parameter": "t1",
+            "start": "2026-02-24 23:00",
+            "end": "2026-02-26 14:00",
+            "what": "Подача ниже графика: в среднем -11,8 % от графика (макс. 13.8 %). Обратка в это время -8,5 % от графика — тоже отклонилась в ту же сторону, что и подача. Расход +4,8 % к предыдущим дням.",
+            "category": "regime_violation",
+            "hypothesis": "Недогрев теплоносителя со стороны источника теплоснабжения",
+            "requirement_code": "T1_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S06",
+      "question": "Что с ИТП-3 с 8 по 18 февраля?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 17.0,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-3",
+            "start": "2026-02-08",
+            "end": "2026-02-18"
+          }
+        }
+      ],
+      "report": {
+        "summary": "ИТП-3 с 8 по 18 февраля имеет проблему с пропусками данных. С 15 февраля в период с 10:00 до 16:00 отсутствовали измерения по всем параметрам.",
+        "findings": [
+          {
+            "substation": "ИТП-3",
+            "parameter": "*",
+            "start": "2026-02-15 10:00",
+            "end": "2026-02-15 16:00",
+            "what": "Нет данных по всем параметрам.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема измерений или связи.",
+            "requirement_code": "DATA_CONTINUITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S07",
+      "question": "Что происходило на ИТП-2 10 февраля?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 21.3,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-2",
+            "start": "2026-02-10",
+            "end": "2026-02-10"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Температура ГВС от 54.4 до 55.5 °C при норме 60–75 °C.",
+        "findings": [
+          {
+            "substation": "ИТП-2",
+            "parameter": "t_dhw",
+            "start": "2026-02-10 06:00",
+            "end": "2026-02-10 11:00",
+            "what": "Температура ГВС от 54.4 до 55.5 °C при норме 60–75 °C.",
+            "category": "regime_violation",
+            "hypothesis": "нарушение работы системы ГВС",
+            "requirement_code": "DHW_RANGE",
+            "requirement_source": "СанПиН 2.1.3684-21 — пункт уточнить"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S08",
+      "question": "Почему на ИТП-1 подача выше нормы 23 февраля?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 24.0,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-1",
+            "start": "2026-02-23",
+            "end": "2026-02-23"
+          }
+        }
+      ],
+      "report": {
+        "summary": "На ИТП-1 подача выше графика из-за постепенного дрейфа датчика t1. Подача в среднем выше графика на 8,6%, а обратка — ниже на 1,7%. При этом расход увеличился на 3,6% по сравнению с предыдущими днями.",
+        "findings": [
+          {
+            "substation": "ИТП-1",
+            "parameter": "t1",
+            "start": "2026-02-23 00:00",
+            "end": "2026-02-23 23:00",
+            "what": "Подача выше графика: в среднем +8,6 % от графика (макс. 9.4 %). Обратка в это время -1,7 % от графика — почти в норме. Расход +3,6 % к предыдущим дням. Отклонение растёт на 0.9 % в сутки (похоже на постепенный дрейф).",
+            "category": "sensor_fault",
+            "hypothesis": "Дрейф датчика t1",
+            "requirement_code": "T1_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S09",
+      "question": "Есть ли проблемы с датчиками на ИТП-4 в феврале?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 26.6,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-4",
+            "start": "2026-02-01",
+            "end": "2026-02-28"
+          }
+        }
+      ],
+      "report": {
+        "summary": "На ИТП-4 в феврале обнаружена проблема с датчиком t1. Подача температуры выше графика на 6,0% в среднем, а обратка — на 1,7% ниже графика. Отклонение растёт на 1,2% в сутки, что указывает на дрейф датчика t1.",
+        "findings": [
+          {
+            "substation": "ИТП-4",
+            "parameter": "t1",
+            "start": "2026-02-20 00:00",
+            "end": "2026-02-24 00:00",
+            "what": "Подача выше графика: в среднем +6,0 % от графика (макс. 8.8 %). Обратка в это время -1,7 % от графика — почти в норме. Расход -0,8 % к предыдущим дням. Отклонение растёт на 1.2 % в сутки (похоже на постепенный дрейф).",
+            "category": "sensor_fault",
+            "hypothesis": "Дрейф датчика t1",
+            "requirement_code": "T1_SCHEDULE",
+            "requirement_source": "Правила технической эксплуатации тепловых энергоустановок (приказ Минэнерго России от 14.05.2025 № 511) — пункт уточнить"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S10",
+      "question": "Как работал ИТП-1 в январе?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 1,
+      "coverage": 1.0,
+      "correct": false,
+      "seconds": 34.2,
+      "missed": [
+        "ИТП-1 spike 12.01 14:00"
+      ],
+      "extra": [
+        "ИТП-1 температура обратки, °C 2026-01-12 14:00"
+      ],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "query_sensors",
+          "args": {
+            "end": "2026-01-31",
+            "substation": "ИТП-1",
+            "start": "2026-01-01"
+          }
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "end": "2026-01-31",
+            "start": "2026-01-01",
+            "substation": "ИТП-1"
+          }
+        }
+      ],
+      "report": {
+        "summary": "В январе 2026 года у ИТП-1 были выявлены следующие проблемы:",
+        "findings": [
+          {
+            "substation": "ИТП-1",
+            "parameter": "температура обратки, °C",
+            "start": "2026-01-12 14:00",
+            "end": "2026-01-12 14:00",
+            "what": "Одиночный выброс температуры обратки: 75.7 °C при обычном уровне около 54.4 °C.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема измерений или связи.",
+            "requirement_code": "DATA_VALIDITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S11",
+      "question": "Были ли пропуски данных на ИТП-5 в январе?",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 16.4,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-5",
+            "start": "2026-01-01",
+            "end": "2026-01-31"
+          }
+        }
+      ],
+      "report": {
+        "summary": "На ИТП-5 в январе был пропуск данных с 20 января в 02:00 до 09:00.",
+        "findings": [
+          {
+            "substation": "ИТП-5",
+            "parameter": "*",
+            "start": "2026-01-20 02:00",
+            "end": "2026-01-20 09:00",
+            "what": "Нет данных по всем параметрам.",
+            "category": "sensor_fault",
+            "hypothesis": "Проблема с каналом связи или прибором учёта.",
+            "requirement_code": "DATA_CONTINUITY",
+            "requirement_source": "Регламент мониторинга (демо)"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S12",
+      "question": "Проверь ИТП-2 за первую половину февраля",
+      "error": null,
+      "expected": 1,
+      "found": 1,
+      "tp": 1,
+      "category_ok": 1,
+      "requirement_ok": 1,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 28.4,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "start": "2026-02-01",
+            "end": "2026-02-15",
+            "substation": "ИТП-2"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Температура горячей воды (ГВС) была ниже нормы (54.4—55.5 °C) в течение 6 часов 10.02.2026 с 06:00 до 11:00. Норма: температура ГВС должна быть в пределах 60—75 °C.",
+        "findings": [
+          {
+            "substation": "ИТП-2",
+            "parameter": "t_dhw",
+            "start": "2026-02-10 06:00",
+            "end": "2026-02-10 11:00",
+            "what": "Температура ГВС от 54.4 до 55.5 °C при норме 60–75 °C.",
+            "category": "regime_violation",
+            "hypothesis": "Нарушение режима ГВС.",
+            "requirement_code": "DHW_RANGE",
+            "requirement_source": "СанПиН 2.1.3684-21 — пункт уточнить"
+          }
+        ],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "S13",
+      "question": "Что случилось на ИТП-4 с 20 по 31 января?",
+      "error": null,
+      "expected": 1,
+      "found": 0,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 0,
+      "coverage": 0.0,
+      "correct": false,
+      "seconds": 7.4,
+      "missed": [
+        "ИТП-4 spike 28.01 09:00"
+      ],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-4",
+            "start": "2023-01-20",
+            "end": "2023-01-31"
+          }
+        }
+      ],
+      "report": {
+        "summary": "За указанный период на ИТП-4 событий, требующих внимания, не обнаружено. Все параметры находятся в норме.",
+        "findings": [],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "N01",
+      "question": "Нормально ли работал ИТП-4 в первую неделю февраля?",
+      "error": null,
+      "expected": 0,
+      "found": 0,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 9.1,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "start": "2026-02-01",
+            "end": "2026-02-07",
+            "substation": "ИТП-4"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Во время первой недели февраля ИТП-4 не выявлено никаких отклонений или проблем. Все параметры работали в норме.",
+        "findings": [],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "N02",
+      "question": "Есть ли нарушения на ИТП-5 с 1 по 14 февраля?",
+      "error": null,
+      "expected": 0,
+      "found": 0,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 7.9,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-5",
+            "start": "2026-02-01",
+            "end": "2026-02-14"
+          }
+        }
+      ],
+      "report": {
+        "summary": "На ИТП-5 с 1 по 14 февраля нарушений не обнаружено.",
+        "findings": [],
+        "recommendations": []
+      }
+    },
+    {
+      "id": "N03",
+      "question": "Проверь ИТП-3 в январе",
+      "error": null,
+      "expected": 0,
+      "found": 0,
+      "tp": 0,
+      "category_ok": 0,
+      "requirement_ok": 0,
+      "ungrounded": 0,
+      "coverage": 1.0,
+      "correct": true,
+      "seconds": 7.7,
+      "missed": [],
+      "extra": [],
+      "wrong_category": [],
+      "trace": [
+        {
+          "tool": "list_substations",
+          "args": {}
+        },
+        {
+          "tool": "detect_anomalies",
+          "args": {
+            "substation": "ИТП-3",
+            "start": "2026-01-01",
+            "end": "2026-01-31"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Для ИТП-3 в январе зафиксировано событий не было.",
+        "findings": [],
+        "recommendations": []
+      }
+    }
+  ]
+}

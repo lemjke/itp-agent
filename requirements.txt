@@ -1,0 +1,7 @@
+ollama
+psycopg[binary]
+pandas
+numpy
+scikit-learn
+streamlit
+matplotlib
