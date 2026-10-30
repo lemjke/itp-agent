@@ -47,7 +47,15 @@ def param_label(p):
 
 def render_result(result, key):
     report = result["report"]
-    st.markdown(report["summary"])
+    st.markdown(report["answer"])
+    checks = []
+    if result.get("dropped_findings"):
+        checks.append(f"отброшено находок без подтверждения детекторами: {result['dropped_findings']}")
+    if result.get("unverified_numbers"):
+        checks.append("в ответе есть числа, которых нет в данных инструментов: "
+                      + ", ".join(result["unverified_numbers"]) + " — проверьте их")
+    if checks:
+        st.warning("Проверка ответа: " + "; ".join(checks), icon="⚠️")
 
     for i, f in enumerate(report["findings"]):
         with st.container(border=True):
@@ -62,7 +70,7 @@ def render_result(result, key):
             st.caption(f"Норма {f['requirement_code']}: {f['requirement_source']}")
             try:
                 st.altair_chart(event_chart(f["substation"], f["parameter"], f["start"], f["end"]),
-                                use_container_width=True, key=f"chart-{key}-{i}")
+                                width="stretch", key=f"chart-{key}-{i}")
             except Exception as exc:  # график — вспомогательный, ответ показываем в любом случае
                 st.caption(f"График недоступен: {exc}")
 
@@ -90,7 +98,7 @@ with st.sidebar:
     st.divider()
     st.markdown("**Примеры вопросов**")
     for q in EXAMPLES:
-        if st.button(q, use_container_width=True):
+        if st.button(q, width="stretch"):
             st.session_state.pending = q
     if st.button("Очистить диалог", type="tertiary"):
         st.session_state.messages = []
@@ -153,5 +161,5 @@ with tab_data:
     period = c2.date_input("Период", value=(pd.Timestamp("2026-02-15").date(), hi), min_value=lo, max_value=hi)
     params = c3.multiselect("Параметры", list(PARAM_NAMES), default=["t1", "t2"], format_func=PARAM_NAMES.get)
     if isinstance(period, tuple) and len(period) == 2 and params:
-        st.altair_chart(overview_chart(sub, period[0], period[1], params), use_container_width=True)
+        st.altair_chart(overview_chart(sub, period[0], period[1], params), width="stretch")
         st.caption("Пунктир — плановое значение по температурному графику.")

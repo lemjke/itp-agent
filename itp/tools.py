@@ -26,8 +26,8 @@ PARAM_NAMES = {
     "p2": "давление в обратном, бар",
     "flow": "расход теплоносителя, т/ч",
 }
-MAX_DAYS = 62
-CONTEXT_DAYS = 3          # история до периода — для базовой линии и сглаживания
+MAX_DAYS = 120
+CONTEXT_DAYS = 14         # история до периода — базовая линия и события, начавшиеся раньше
 
 
 class ToolError(ValueError):
@@ -36,10 +36,29 @@ class ToolError(ValueError):
 
 # ---------- вспомогательное ----------
 
+def _by_address(text):
+    """ИТП по словам из адреса или типа здания: «школа на Учебной» → 1. Сравнение по основам слов."""
+    stems = {w[:5] for w in re.findall(r"[а-яё]{4,}", str(text).lower())} - {"улица", "проспе", "здани"}
+    with psycopg.connect(DB_DSN) as con:
+        rows = con.execute("SELECT id, address, building_type FROM substations").fetchall()
+    scored = []
+    for sid, address, btype in rows:
+        words = {w[:5] for w in re.findall(r"[а-яё]{4,}", f"{address} {btype}".lower())}
+        scored.append((len(stems & words), sid))
+    scored.sort(reverse=True)
+    if scored and scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        return scored[0][1]
+    return None
+
+
 def _substation_id(substation):
     m = re.search(r"\d+", str(substation))
     if not m:
-        raise ToolError(f"Не понял номер ИТП: {substation!r}. Пример: 'ИТП-3' или 3.")
+        sid = _by_address(substation)
+        if sid is None:
+            raise ToolError(f"Не понял, какой это ИТП: {substation!r}. Укажите номер ('ИТП-3') "
+                            "или вызовите list_substations и найдите по адресу.")
+        return sid
     sid = int(m.group())
     with psycopg.connect(DB_DSN) as con:
         if not con.execute("SELECT 1 FROM substations WHERE id = %s", (sid,)).fetchone():
@@ -58,7 +77,7 @@ def _period(start, end):
     if e < s:
         raise ToolError("Конец периода раньше начала.")
     if (e - s).days > MAX_DAYS:
-        raise ToolError(f"Период не длиннее {MAX_DAYS} дней.")
+        raise ToolError(f"Период не длиннее {MAX_DAYS} дней — разбейте запрос на части.")
     lo, hi = pd.Timestamp(DATA_START), pd.Timestamp(DATA_END)
     if e < lo or s > hi:
         hint = ""
@@ -70,7 +89,12 @@ def _period(start, end):
             pass
         raise ToolError(f"За период {s:%Y-%m-%d} — {e:%Y-%m-%d} данных нет (данные есть с {lo:%Y-%m-%d} "
                         f"по {hi:%Y-%m-%d}).{hint or ' Проверьте даты.'}")
-    return s, e
+    note = None
+    if s < lo or e > hi:                     # частично вне данных — сокращаем и сообщаем
+        s, e = max(s, lo), min(e, hi)
+        note = (f"Данные есть только с {lo:%Y-%m-%d} по {hi:%Y-%m-%d}, поэтому период сокращён "
+                f"до {s:%Y-%m-%d} — {e:%Y-%m-%d}. Сообщи это пользователю.")
+    return s, e, note
 
 
 ALL_WORDS = {"все", "всех", "all", "*", "любой"}
@@ -112,8 +136,10 @@ def _runs(mask, min_len=1, max_gap=0):
     return [(a, b) for a, b in runs if (b - a) / pd.Timedelta(hours=1) + 1 >= min_len]
 
 
-def _clip(runs, start, end):
-    return [(max(a, start), min(b, end)) for a, b in runs if b >= start and a <= end]
+def _overlapping(runs, start, end):
+    """Участки, пересекающиеся с периодом. Границы не обрезаются: если событие началось
+    раньше периода, агент видит его настоящее начало."""
+    return [(a, b) for a, b in runs if b >= start and a <= end]
 
 
 def _signed(v):
@@ -148,7 +174,11 @@ def _describe(kind, param, ev):
                 state = "отклонилась в противоположную сторону"
             related = f" Обратка в это время {_signed(t2d)} % от графика — {state}."
         else:
-            related = f" Подача в это время {_signed(ev['t1_mean_deviation_pct'])} % от графика."
+            t1d = ev["t1_mean_deviation_pct"]
+            related = (f" Подача в это время {_signed(t1d)} % от графика — "
+                       + ("в норме: источник греет правильно, лишнее тепло остаётся у потребителя "
+                          "(типичная картина разрегулировки системы отопления, перетопа помещений)."
+                          if abs(t1d) < 3 else "тоже вне графика."))
         flow = f" Расход {_signed(ev['flow_change_vs_before_pct'])} % к предыдущим дням."
         trend = ""
         if kind == "t1_off_schedule":
@@ -179,7 +209,7 @@ def list_substations(**_ignored):
 def query_sensors(substation, start, end, parameters=None):
     """Посуточная сводка параметров ИТП за период + плановые значения по графику."""
     sid = _substation_id(substation)
-    s, e = _period(start, end)
+    s, e, note = _period(start, end)
     df = _load(sid, s, e).loc[s:e]
     params = [p for p in (parameters or PARAMS) if p in PARAMS] or PARAMS
     daily = df.resample("D")
@@ -193,7 +223,21 @@ def query_sensors(substation, start, end, parameters=None):
         if "t2" in params:
             row["t2_plan"] = round(float(g["t2_plan"].mean()), 1)
         out.append(row)
-    return {"substation": f"ИТП-{sid}", "units": {p: PARAM_NAMES[p] for p in params}, "daily": out}
+    summary = {}
+    for p in params:
+        x = df[p].dropna()
+        if len(x):
+            summary[p] = {"mean": round(float(x.mean()), 1), "min": round(float(x.min()), 1),
+                          "max": round(float(x.max()), 1)}
+    for p in ("t1", "t2"):
+        if p in params:
+            summary[p]["plan_mean"] = round(float(df[f"{p}_plan"].mean()), 1)
+    res = {"substation": f"ИТП-{sid}", "period": {"start": _fmt(s), "end": _fmt(e)},
+           "units": {p: PARAM_NAMES[p] for p in params},
+           "period_summary": summary, "daily": out}
+    if note:
+        res["note"] = note
+    return res
 
 
 def detect_anomalies(substation, start, end):
@@ -208,11 +252,14 @@ def detect_anomalies(substation, start, end):
             ids = [r[0] for r in con.execute("SELECT id FROM substations ORDER BY id")]
         parts = [detect_anomalies(i, start, end) for i in ids]
         events = sorted((ev for p in parts for ev in p["events"]), key=lambda ev: (ev["start"], ev["substation"]))
-        return {"substation": "все", "substations_checked": [p["substation"] for p in parts],
-                "period": parts[0]["period"], "events_found": len(events), "events": events}
+        res = {"substation": "все", "substations_checked": [p["substation"] for p in parts],
+               "period": parts[0]["period"], "events_found": len(events), "events": events}
+        if parts[0].get("note"):
+            res["note"] = parts[0]["note"]
+        return res
 
     sid = _substation_id(substation)
-    s, e = _period(start, end)
+    s, e, note = _period(start, end)
     df = _load(sid, s, e)
     events = []
 
@@ -228,7 +275,7 @@ def detect_anomalies(substation, start, end):
 
     # 1. Пропуски данных
     gap = df[["t1", "t2", "t_dhw", "p1", "p2", "flow"]].isna().any(axis=1)
-    for a, b in _clip(_runs(gap), s, e):
+    for a, b in _overlapping(_runs(gap), s, e):
         add("data_gap", "*", a, b, "DATA_CONTINUITY")
 
     # 2. «Замёрзшие» значения: одно и то же показание 6 часов подряд и дольше
@@ -237,7 +284,7 @@ def detect_anomalies(substation, start, end):
         group = (x != x.shift()).cumsum()
         size = x.groupby(group).transform("size")
         frozen = (size >= 6) & x.notna()
-        for a, b in _clip(_runs(frozen, min_len=6), s, e):
+        for a, b in _overlapping(_runs(frozen, min_len=6), s, e):
             add("frozen_value", p, a, b, "DATA_VALIDITY", value=float(df.at[a, p]))
 
     # 3. Одиночные выбросы: точка резко отличается и от предыдущей, и от следующей
@@ -250,7 +297,7 @@ def detect_anomalies(substation, start, end):
         thr = max(8 * mad, 1.0 if p in ("p1", "p2") else 4.0)
         flag = (d_prev.abs() > thr) & (d_next.abs() > thr) & (np.sign(d_prev) == np.sign(d_next))
         spikes |= flag
-        for a, b in _clip(_runs(flag), s, e):
+        for a, b in _overlapping(_runs(flag), s, e):
             add("spike", p, a, b, "DATA_VALIDITY",
                 value=round(float(x.at[a]), 1),
                 neighbours_median=round(float(x.loc[a - pd.Timedelta(hours=3):a - pd.Timedelta(hours=1)].median()), 1))
@@ -259,11 +306,10 @@ def detect_anomalies(substation, start, end):
     clean = df.copy()
     clean.loc[spikes, ["t1", "t2", "t_dhw", "p1", "p2", "flow"]] = np.nan
     sm = clean.rolling(6, center=True, min_periods=3).mean()
-    baseline = clean.loc[: s - pd.Timedelta(hours=1)]
-    base_flow = baseline["flow"].mean() if len(baseline) else clean["flow"].mean()
-
     def context(a, b):
         w = clean.loc[a:b]
+        before = clean.loc[a - pd.Timedelta(days=3):a - pd.Timedelta(hours=1), "flow"]
+        base_flow = before.mean() if before.notna().any() else clean["flow"].mean()
         t2_dev = (w["t2"] - w["t2_plan"]).mean() / w["t2_plan"].mean() * 100
         t1_dev = (w["t1"] - w["t1_plan"]).mean() / w["t1_plan"].mean() * 100
         days = max((b - a) / pd.Timedelta(days=1), 1 / 24)
@@ -284,7 +330,7 @@ def detect_anomalies(substation, start, end):
 
     # 4. Подача вне графика ±3 % (держится ≥ 6 ч)
     t1_dev = (sm["t1"] - sm["t1_plan"]) / sm["t1_plan"]
-    for a, b in _clip(_runs(t1_dev.abs() > 0.03, min_len=6, max_gap=2), s, e):
+    for a, b in _overlapping(_runs(t1_dev.abs() > 0.03, min_len=6, max_gap=2), s, e):
         dev = t1_dev.loc[a:b]
         add("t1_off_schedule", "t1", a, b, "T1_SCHEDULE",
             direction="выше графика" if dev.mean() > 0 else "ниже графика",
@@ -295,26 +341,29 @@ def detect_anomalies(substation, start, end):
     # 5. Обратка выше графика более чем на 5 % (норма — по среднесуточной, поэтому окно 24 ч)
     sm24 = clean[["t2", "t2_plan"]].rolling(24, center=True, min_periods=12).mean()
     t2_dev = (sm24["t2"] - sm24["t2_plan"]) / sm24["t2_plan"]
-    for a, b in _clip(_runs(t2_dev > 0.05, min_len=12, max_gap=2), s, e):
+    for a, b in _overlapping(_runs(t2_dev > 0.05, min_len=12, max_gap=2), s, e):
         add("t2_above_schedule", "t2", a, b, "T2_SCHEDULE",
             max_deviation_pct=round(float(t2_dev.loc[a:b].max() * 100), 1),
             **context(a, b))
 
     # 6. ГВС вне 60–75 °C
     dhw = clean["t_dhw"].rolling(3, center=True, min_periods=2).median()
-    for a, b in _clip(_runs((dhw < 60) | (dhw > 75), min_len=2, max_gap=1), s, e):
+    for a, b in _overlapping(_runs((dhw < 60) | (dhw > 75), min_len=2, max_gap=1), s, e):
         add("dhw_out_of_range", "t_dhw", a, b, "DHW_RANGE",
             min_value=round(float(clean["t_dhw"].loc[a:b].min()), 1),
             max_value=round(float(clean["t_dhw"].loc[a:b].max()), 1))
 
     # 7. Перепад давлений
     dp = sm["p1"] - sm["p2"]
-    for a, b in _clip(_runs(dp < 1.0, min_len=3), s, e):
+    for a, b in _overlapping(_runs(dp < 1.0, min_len=3), s, e):
         add("low_pressure_drop", "p1,p2", a, b, "DP_MIN", min_dp=round(float(dp.loc[a:b].min()), 2))
 
     events.sort(key=lambda ev: ev["start"])
-    return {"substation": f"ИТП-{sid}", "period": {"start": _fmt(s), "end": _fmt(e)},
-            "events_found": len(events), "events": events}
+    res = {"substation": f"ИТП-{sid}", "period": {"start": _fmt(s), "end": _fmt(e)},
+           "events_found": len(events), "events": events}
+    if note:
+        res["note"] = note
+    return res
 
 
 def get_requirement(code):

@@ -28,4 +28,9 @@ if __name__ == "__main__":
     question = " ".join(sys.argv[1:]) or "Что не так с ИТП-3 за последнюю неделю?"
     print(f"Вопрос: {question}\n")
     result = ask(question, on_event=show)
-    print(f"\n{render(result['report'])}\n\n[{result['seconds']} с]")
+    print(f"\n{render(result['report'])}\n")
+    if result["dropped_findings"]:
+        print(f"⚠ отброшено находок без подтверждения детекторами: {result['dropped_findings']}")
+    if result["unverified_numbers"]:
+        print(f"⚠ числа, которых нет в данных инструментов: {', '.join(result['unverified_numbers'])}")
+    print(f"[{result['seconds']} с]")

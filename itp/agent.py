@@ -4,12 +4,14 @@
 Фаза 2 — структурированный вывод: модель обязана ответить строго по схеме REPORT_SCHEMA.
 """
 import json
+import re
 import time
 
 import ollama
 import pandas as pd
 
 from .config import LLM_HOST, LLM_MODEL, NOW
+from .grounding import ground
 from .tools import TOOLS, ToolError
 
 MAX_STEPS = 8
@@ -20,18 +22,27 @@ def _days_back(n):
     end = pd.Timestamp(NOW).normalize()
     return f"{(end - pd.Timedelta(days=n - 1)):%Y-%m-%d} — {end:%Y-%m-%d}"
 
+
 SYSTEM_PROMPT = f"""Ты — ассистент инженера по эксплуатации индивидуальных тепловых пунктов (ИТП).
 Текущий момент: {NOW}. Текущий год — {NOW[:4]}; если в вопросе год не указан, это {NOW[:4]} год.
 Относительные периоды отсчитывай от текущего момента включительно: «последняя неделя» — {_days_back(7)},
 «последние 3 дня» — {_days_back(3)}, «вчера» — {_days_back(2)[:10]}.
+Месяцы: «в январе» — {NOW[:4]}-01-01 — {NOW[:4]}-01-31, «в феврале» — {NOW[:4]}-02-01 — {NOW[:4]}-02-28.
 
 Как работать:
 1. Всегда опирайся на инструменты. Ничего не вычисляй сам и не придумывай чисел — бери их из ответов инструментов.
-2. Если номер ИТП или период не ясны — вызови list_substations. Если спрашивают обо всех ИТП —
-   вызови detect_anomalies с substation="все". Если инструмент вернул error — исправь аргументы и повтори.
-3. Для поиска проблем вызывай detect_anomalies. У каждого события уже есть описание (summary) и норма
+2. ИТП можно указать номером ('ИТП-3') или адресом ('дом на Северном') — инструменты понимают оба варианта;
+   проверяй только тот ИТП, о котором спрашивают.
+   Если спрашивают обо всех ИТП — вызови detect_anomalies с substation="все". Если период не указан —
+   бери последнюю неделю. Если инструмент вернул error — исправь аргументы и повтори.
+   Если в ответе инструмента есть поле note — обязательно перескажи его пользователю.
+3. Вопрос о значениях («какая средняя…», «максимальная…», «сколько…») — вызови query_sensors и ответь
+   числами из period_summary. Вопрос о проблемах, жалобах, «что не так» — вызови detect_anomalies.
+   Жалобы на жару в помещениях ищи среди отклонений подачи или обратки выше графика, на холод — ниже графика,
+   на горячую воду — среди событий ГВС.
+4. Для поиска проблем вызывай detect_anomalies. У каждого события уже есть описание (summary) и норма
    (requirement: code, rule, source) — ссылайся на неё. Нормы своими словами не формулируй.
-4. Для каждого события определи категорию и вероятную причину по summary:
+5. Для каждого события определи категорию и вероятную причину по summary:
    - подача отклоняется от графика, а обратка «почти в норме» — category=sensor_fault: смещение показаний
      датчика t1 (реальный режим не менялся); если в summary сказано, что отклонение растёт в сутки, —
      дрейф датчика t1;
@@ -42,7 +53,7 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    - ГВС ниже 60 °C или выше 75 °C — category=regime_violation: нарушение режима ГВС;
    - пропуск данных, «замёрзшее» значение, одиночный выброс — category=sensor_fault: проблема измерений
      или связи.
-5. Отвечай по-русски, коротко и по делу.
+6. Отвечай по-русски, коротко и по делу.
 """
 
 TOOL_SCHEMAS = [
@@ -85,7 +96,9 @@ TOOL_SCHEMAS = [
 REPORT_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "description": "Вывод в 1–3 предложениях"},
+        "answer": {"type": "string",
+                   "description": "Прямой ответ на вопрос пользователя: 1–4 законченных предложения "
+                                  "с числами из инструментов"},
         "findings": {"type": "array", "items": {
             "type": "object",
             "properties": {
@@ -105,15 +118,45 @@ REPORT_SCHEMA = {
         }},
         "recommendations": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["summary", "findings", "recommendations"],
+    "required": ["answer", "findings", "recommendations"],
 }
 
 FINAL_INSTRUCTION = (
-    "Сформируй итоговый отчёт строго по JSON-схеме. В findings — каждое событие, которое вернул detect_anomalies, "
-    "по одному элементу на событие, с его датами. В what перескажи summary события с числами. "
-    "category и hypothesis — по правилам из пункта 4. requirement_code и requirement_source возьми из поля "
-    "requirement события. Если событий нет — пустой findings."
+    "Сформируй итоговый отчёт строго по JSON-схеме. В answer — прямой ответ именно на заданный вопрос "
+    "законченными предложениями (не одним словом или числом) "
+    "(если спрашивали значение — напиши само число из period_summary, например «54,6 °C», а не ссылку на поле; "
+    "если в ответе инструмента был note — "
+    "перескажи его). В findings — события, которые вернул detect_anomalies и которые относятся к вопросу, "
+    "по одному элементу на событие, с его датами; если detect_anomalies не вызывался или событий нет — "
+    "пустой findings. В what перескажи summary события с числами. category и hypothesis — по правилам "
+    "из пункта 5. requirement_code и requirement_source возьми из поля requirement события."
 )
+
+OFF_TOPIC_ANSWER = (
+    "Я помогаю только с диагностикой тепловых пунктов: могу проверить ИТП за период, найти неисправности "
+    "датчиков и нарушения режима, назвать значения параметров. Например: «Что не так с ИТП-3 за последнюю неделю?»"
+)
+
+PLACEHOLDER = re.compile(r"\$\{|\{\{|period_summary|events\[")
+_NUM = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _numbers(text):
+    """Числа из текста в нормализованном виде (запятая → точка, без ведущих нулей)."""
+    out = set()
+    for n in _NUM.findall(str(text)):
+        n = n.replace(",", ".")
+        out.add(n.lstrip("0") or "0")
+        if "." in n:
+            out.add(n.rstrip("0").rstrip(".").lstrip("0") or "0")
+    return out
+
+
+def unverified_numbers(report, question, trace):
+    """Числа из ответа, которых нет ни в вопросе, ни в результатах инструментов."""
+    known = _numbers(question) | _numbers(json.dumps([s["result"] for s in trace], ensure_ascii=False))
+    text = report.get("answer", "") + " " + " ".join(f.get("what", "") for f in report.get("findings", []))
+    return sorted(_numbers(text) - known, key=lambda x: float(x))
 
 
 def _run_tool(name, args):
@@ -164,11 +207,34 @@ def ask(question, on_event=None, model=LLM_MODEL):
             messages.append({"role": "tool", "tool_name": name,
                              "content": json.dumps(result, ensure_ascii=False, default=str)})
 
+    if not trace:
+        # Модель не обратилась ни к одному инструменту — значит, вопрос вне темы.
+        # Отчёт по схеме не строим: без данных ему не на что опереться.
+        report = {"answer": OFF_TOPIC_ANSWER, "findings": [], "recommendations": []}
+        emit("report", report)
+        return {"report": report, "trace": trace, "dropped_findings": 0, "unverified_numbers": [],
+                "off_topic": True, "seconds": round(time.time() - t0, 1)}
+
     messages.append({"role": "user", "content": FINAL_INSTRUCTION})
     resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=options)
-    report = json.loads(resp.message.content)
+    raw = json.loads(resp.message.content)
+    if PLACEHOLDER.search(raw.get("answer", "")):
+        # Модель вставила шаблон вместо числа — один раз просим переписать ответ
+        emit("retry", {"error": "в ответе шаблон вместо значения"})
+        messages += [{"role": "assistant", "content": resp.message.content},
+                     {"role": "user", "content": "В answer ссылка на поле вместо значения. Перепиши answer, "
+                                                 "подставив сами числа из ответа инструмента."}]
+        resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=options)
+        raw = json.loads(resp.message.content)
+    report, dropped = ground(raw, trace)          # находки без опоры на детекторы отбрасываются
+    # Сообщения инструментов о сокращении периода доводим до пользователя в любом случае
+    notes = list(dict.fromkeys(s["result"]["note"] for s in trace if s["result"].get("note")))
+    if notes and "только с" not in report["answer"]:
+        report["answer"] += "\n\nℹ️ " + " ".join(n.replace(" Сообщи это пользователю.", "") for n in notes)
     emit("report", report)
-    return {"report": report, "trace": trace, "seconds": round(time.time() - t0, 1)}
+    return {"report": report, "trace": trace, "dropped_findings": dropped,
+            "unverified_numbers": unverified_numbers(report, question, trace),
+            "off_topic": False, "seconds": round(time.time() - t0, 1)}
 
 
 CATEGORY_RU = {"sensor_fault": "неисправность измерений", "regime_violation": "нарушение режима",
@@ -177,7 +243,7 @@ CATEGORY_RU = {"sensor_fault": "неисправность измерений", 
 
 def render(report):
     """Отчёт в читаемый текст."""
-    lines = [report["summary"], ""]
+    lines = [report["answer"], ""]
     for i, f in enumerate(report["findings"], 1):
         lines += [
             f"{i}. {f['substation']} · {f['parameter']} · {f['start']} — {f['end']}",
