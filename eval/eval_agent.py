@@ -14,7 +14,9 @@ from pathlib import Path
 import pandas as pd
 import psycopg
 
+from data.norms_corpus import BY_CODE
 from eval.eval_detectors import run as run_detectors
+from eval.eval_retrieval import gold_snippet
 from eval.matching import TOLERANCE, _sid, load_truth, match_sets, truth_in
 from eval.scenarios import SCENARIOS
 from itp.agent import _numbers, ask
@@ -22,8 +24,27 @@ from itp.config import DB_DSN, LLM_MODEL
 
 OUT = Path(__file__).resolve().parent
 GROUPS = {"S": "Диагностика", "N": "Проблем нет", "A": "Нетипичные (на них дорабатывался агент)",
-          "H": "Отложенный набор (агент на нём не настраивался)"}
+          "H": "Отложенный набор (агент на нём не настраивался)", "R": "Вопросы о нормах (поиск по документам)"}
 VALUE_TOL = 0.15
+CITE = {"PTE511": ("511", "технической эксплуатации"), "PP354": ("354", "коммунальных услуг"),
+        "PP1034": ("1034", "коммерческого учета", "коммерческого учёта"), "SANPIN3684": ("3684", "санпин")}
+
+
+def evaluate_norm(scn, row, trace):
+    """Вопрос о норме: поиск нашёл эталонный пункт, в ответе его числа и ссылка на документ."""
+    snippet = gold_snippet(scn)
+    found = any(BY_CODE[scn["doc"]]["short"] in r["source"] and snippet in " ".join(r["text"].split())
+                for s in trace if s["tool"] == "search_norms" for r in s["result"].get("results", []))
+    answer = row["answer"]
+    cites = answer + " " + " ".join(row["report"].get("sources", []))
+    missing = [n for n in scn["numbers"] if not _numbers(n) & _numbers(answer)]
+    wrong = [n for n in scn.get("forbidden", []) if _numbers(n) & _numbers(answer)]
+    cited = any(k in cites.lower() for k in CITE[scn["doc"]])
+    row["correct"] = not row["error"] and found and not missing and not wrong and cited
+    row["notes"] += ([] if found else ["эталонный пункт не найден"]) + \
+                    ([f"нет чисел {missing}"] if missing else []) + \
+                    ([f"чужие числа {wrong}"] if wrong else []) + ([] if cited else ["нет ссылки на документ"])
+    return row
 
 
 def _overlaps(args, start, end):
@@ -65,6 +86,9 @@ def evaluate(scn, truth, model=LLM_MODEL, arch="react"):
         if findings:
             row["notes"].append("находки на вопрос вне темы")
         return row
+
+    if kind == "norm":
+        return evaluate_norm(scn, row, result["trace"])
 
     if kind == "value":
         expected_value = true_value(scn)
@@ -128,6 +152,8 @@ def summarize(rows):
         "values": sum(r["type"] == "value" for r in rows),
         "offtopic_correct": sum(r["correct"] for r in rows if r["type"] == "offtopic"),
         "offtopic": sum(r["type"] == "offtopic" for r in rows),
+        "norms_correct": sum(r["correct"] for r in rows if r["type"] == "norm"),
+        "norms": sum(r["type"] == "norm" for r in rows),
         "mean_seconds": sum(r["seconds"] for r in rows) / len(rows),
         "errors": sum(bool(r["error"]) for r in rows),
     }
@@ -160,6 +186,8 @@ def write_markdown(summary, rows, det):
         f"| Верная ссылка на норму | {pct(summary['requirement_accuracy'])} |",
         f"| Верные числа в ответах на вопросы о значениях | {summary['values_correct']} из {summary['values']} |",
         f"| Корректная реакция на вопросы вне темы | {summary['offtopic_correct']} из {summary['offtopic']} |",
+        f"| Вопросы о нормах: нужный пункт найден, числа и ссылка в ответе | {summary['norms_correct']} из "
+        f"{summary['norms']} |",
         f"| Находок отброшено проверкой (без опоры на детекторы) | {summary['dropped_by_guard']} |",
         f"| Проверены нужные ИТП за нужный период | {pct(summary['tool_coverage'])} |",
         f"| Среднее время ответа | {summary['mean_seconds']:.0f} с |",

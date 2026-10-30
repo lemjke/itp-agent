@@ -11,6 +11,7 @@ import pandas as pd
 import psycopg
 
 from .config import DATA_END, DATA_START, DB_DSN
+from . import rag
 from .norms import BY_CODE
 from .schedule import graph
 
@@ -390,9 +391,20 @@ def get_requirement(code):
     return req
 
 
+def search_norms(query, k=5):
+    """Пункты нормативных документов, ближайшие к запросу по смыслу (RAG, см. itp/rag.py)."""
+    query = str(query or "").strip()
+    if len(query) < 5:
+        raise ToolError("Нужен запрос — о чём норма, например 'допустимое отклонение температуры "
+                        "в подающем трубопроводе от температурного графика'.")
+    hits = rag.search(query, k=max(1, min(int(k), 5)), mode="vector")
+    return {"query": query, "results": [{"source": h["source"], "text": h["text"][:1200]} for h in hits]}
+
+
 TOOLS = {
     "list_substations": list_substations,
     "query_sensors": query_sensors,
     "detect_anomalies": detect_anomalies,
     "get_requirement": get_requirement,
+    "search_norms": search_norms,
 }

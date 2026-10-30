@@ -53,7 +53,15 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    - ГВС ниже 60 °C или выше 75 °C — category=regime_violation: нарушение режима ГВС;
    - пропуск данных, «замёрзшее» значение, одиночный выброс — category=sensor_fault: проблема измерений
      или связи.
-6. Отвечай по-русски, коротко и по делу.
+6. Вопрос о нормах и правилах («какая норма…», «допустимо ли…», «сколько можно…», «что положено…»,
+   «что делать по правилам…») — вызови search_norms. В query пиши официальными терминами документов:
+   «подающий трубопровод», а не «подача»; «обратный трубопровод», а не «обратка»; «горячее водоснабжение»,
+   «тепловой пункт», «узел учёта». Отвечай только по тексту найденных пунктов и называй источник ровно так,
+   как в поле source. Если в найденных пунктах ответа нет — так и скажи, не додумывай.
+   Вопрос о допустимости значения без ИТП и периода («давление 0,7 МПа в кране — это нормально?», «подача
+   на 2 % ниже графика — допустимо?») — тоже вопрос о норме: search_norms, а не detect_anomalies. В ответе
+   назови предельное значение из пункта и сравни с ним значение из вопроса.
+7. Отвечай по-русски, коротко и по делу.
 """
 
 TOOL_SCHEMAS = [
@@ -91,6 +99,17 @@ TOOL_SCHEMAS = [
             "code": {"type": "string", "description": "Код требования, например 'T2_SCHEDULE'"},
         }, "required": ["code"]},
     }},
+    {"type": "function", "function": {
+        "name": "search_norms",
+        "description": "Поиск пунктов нормативных документов по смыслу: правила технической эксплуатации "
+                       "тепловых установок (приказ Минэнерго № 511), правила коммунальных услуг (ПП № 354), "
+                       "правила коммерческого учёта тепловой энергии (ПП № 1034), СанПиН 2.1.3684-21. "
+                       "Возвращает текст пунктов и источник.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Вопрос пользователя, пересказанный официальными "
+                                                       "терминами документов (без примеров из этого описания)"},
+        }, "required": ["query"]},
+    }},
 ]
 
 REPORT_SCHEMA = {
@@ -117,8 +136,11 @@ REPORT_SCHEMA = {
                          "hypothesis", "requirement_code", "requirement_source"],
         }},
         "recommendations": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "items": {"type": "string"},
+                    "description": "Пункты документов из search_norms, на которые опирается answer, — "
+                                   "ровно как в поле source; пусто, если search_norms не вызывался"},
     },
-    "required": ["answer", "findings", "recommendations"],
+    "required": ["answer", "findings", "recommendations", "sources"],
 }
 
 FINAL_INSTRUCTION = (
@@ -129,12 +151,14 @@ FINAL_INSTRUCTION = (
     "перескажи его). В findings — события, которые вернул detect_anomalies и которые относятся к вопросу, "
     "по одному элементу на событие, с его датами; если detect_anomalies не вызывался или событий нет — "
     "пустой findings. В what перескажи summary события с числами. category и hypothesis — по правилам "
-    "из пункта 5. requirement_code и requirement_source возьми из поля requirement события."
+    "из пункта 5. requirement_code и requirement_source возьми из поля requirement события. "
+    "Если вызывался search_norms — в answer перескажи требование с его числами и назови источник из поля source."
 )
 
 OFF_TOPIC_ANSWER = (
     "Я помогаю только с диагностикой тепловых пунктов: могу проверить ИТП за период, найти неисправности "
-    "датчиков и нарушения режима, назвать значения параметров. Например: «Что не так с ИТП-3 за последнюю неделю?»"
+    "датчиков и нарушения режима, назвать значения параметров, найти норму в правилах. "
+    "Например: «Что не так с ИТП-3 за последнюю неделю?»"
 )
 
 PLACEHOLDER = re.compile(r"\$\{|\{\{|period_summary|events\[")
@@ -177,7 +201,7 @@ ARCHITECTURES = {
     "workflow": "Фиксированный workflow: модель только разбирает вопрос, вызовы делает код",
 }
 
-TOOL_NAMES = ["list_substations", "query_sensors", "detect_anomalies", "get_requirement"]
+TOOL_NAMES = ["list_substations", "query_sensors", "detect_anomalies", "get_requirement", "search_norms"]
 PARAM_CODES = ["t_outdoor", "t1", "t2", "t_dhw", "p1", "p2", "flow"]
 
 PLAN_SCHEMA = {
@@ -190,6 +214,7 @@ PLAN_SCHEMA = {
             "start": {"type": "string", "description": "YYYY-MM-DD"},
             "end": {"type": "string", "description": "YYYY-MM-DD"},
             "parameters": {"type": "array", "items": {"type": "string", "enum": PARAM_CODES}},
+            "query": {"type": "string", "description": "для search_norms: что ищем в нормах"},
         },
         "required": ["tool"],
     }}},
@@ -200,15 +225,16 @@ PLAN_INSTRUCTION = (
     "Составь план вызовов инструментов, который нужен для ответа на вопрос, — сразу весь, "
     "по одному шагу на вызов. Инструменты: list_substations (без аргументов); query_sensors(substation, "
     "start, end, parameters) — значения параметров; detect_anomalies(substation, start, end) — поиск "
-    "проблем, substation может быть 'все'. Если вопрос не о тепловых пунктах — пустой план."
+    "проблем, substation может быть 'все'; search_norms(query) — поиск пункта нормативных документов. "
+    "Если вопрос не о тепловых пунктах — пустой план."
 )
 
 INTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        "intent": {"type": "string", "enum": ["diagnosis", "value", "offtopic"],
+        "intent": {"type": "string", "enum": ["diagnosis", "value", "norm", "offtopic"],
                    "description": "diagnosis — найти проблемы; value — назвать значение параметра; "
-                                  "offtopic — вопрос не о тепловых пунктах"},
+                                  "norm — что требуют нормы и правила; offtopic — вопрос не о тепловых пунктах"},
         "substations": {"type": "array", "items": {"type": "string"},
                         "description": "ИТП как в вопросе: 'ИТП-3', адрес или 'все'"},
         "start": {"type": "string", "description": "YYYY-MM-DD"},
@@ -280,7 +306,7 @@ def _collect_plan(client, model, messages, options, emit, chat_kw):
     steps = _safe_json(resp.message.content).get("steps", [])[:6]
     emit("plan", {"steps": steps})
     keys = {"list_substations": [], "query_sensors": ["substation", "start", "end", "parameters"],
-            "detect_anomalies": ["substation", "start", "end"]}
+            "detect_anomalies": ["substation", "start", "end"], "search_norms": ["query"]}
     trace = []
     for st in steps:
         name = st.get("tool")
@@ -297,6 +323,9 @@ def _collect_workflow(client, model, messages, options, emit, chat_kw):
     emit("intent", intent)
     trace = []
     if intent.get("intent") == "offtopic":
+        return trace
+    if intent.get("intent") == "norm":          # запрос — сам вопрос пользователя, без переформулировки
+        _execute("search_norms", {"query": messages[1]["content"]}, trace, messages, emit)
         return trace
     for sub in (intent.get("substations") or ["все"])[:5]:
         args = {"substation": sub, "start": intent.get("start", ""), "end": intent.get("end", "")}
@@ -346,7 +375,7 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react"):
                                                  "подставив сами числа из ответа инструмента."}]
         resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=final_opts, **chat_kw)
         raw = _safe_json(resp.message.content)
-    for key, default in (("answer", ""), ("findings", []), ("recommendations", [])):
+    for key, default in (("answer", ""), ("findings", []), ("recommendations", []), ("sources", [])):
         raw.setdefault(key, default)
     report, dropped = ground(raw, trace)          # находки без опоры на детекторы отбрасываются
     # Сообщения инструментов о сокращении периода доводим до пользователя в любом случае

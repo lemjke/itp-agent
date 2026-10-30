@@ -16,6 +16,7 @@ DB_ADMIN_DSN = os.getenv("ITP_DB_ADMIN_DSN", f"host=localhost port=5432 dbname=p
 
 LLM_MODEL = os.getenv("ITP_LLM_MODEL", "qwen2.5:7b")
 LLM_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+EMBED_MODEL = os.getenv("ITP_EMBED_MODEL", "bge-m3")       # эмбеддинги для поиска норм
 
 # Климат Новосибирска (СП 131.13330): расчётная температура наружного воздуха
 # для проектирования отопления и расчётная внутренняя температура.

@@ -51,8 +51,30 @@ def find_event(finding, events):
     return None
 
 
+def ground_sources(report, trace):
+    """Источники норм — только те пункты, которые реально вернул search_norms (без выдуманных ссылок).
+
+    Модель может сократить подпись («ПП № 354, п. 4»), поэтому источник засчитывается, если совпадает
+    с найденным целиком или совпадают номер пункта и номер документа (511, 354, 1034, 3684).
+    В отчёт попадает полная подпись найденного пункта.
+    """
+    found = list(dict.fromkeys(r["source"] for s in trace if s.get("tool") == "search_norms"
+                               for r in (s.get("result") or {}).get("results", [])))
+    kept = []
+    for src in map(str, report.get("sources") or []):
+        point = re.search(r"п\.\s*([\d()]+)\s*$", src)
+        docs = set(re.findall(r"\b\d{3,4}\b", src[:point.start()] if point else src))
+        for f in found:
+            if src == f or (point and docs and f.endswith(f"п. {point.group(1)}")
+                            and docs & set(re.findall(r"\b\d{3,4}\b", f))):
+                kept.append(f)
+                break
+    return {**report, "sources": list(dict.fromkeys(kept))}
+
+
 def ground(report, trace):
     """Оставляет только подтверждённые находки. Возвращает (отчёт, число отброшенных)."""
+    report = ground_sources(report, trace)
     events = tool_events(trace)
     kept, used = [], set()
     for f in report.get("findings", []):

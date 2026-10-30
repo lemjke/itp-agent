@@ -19,6 +19,7 @@ EXAMPLES = [
     "Что происходило на ИТП-2 с 20 по 28 февраля?",
     "Есть ли проблемы с датчиками на ИТП-4 в феврале?",
     "Проверь ИТП-1 и ИТП-5 за последнюю неделю",
+    "Насколько обратка может быть выше графика по правилам?",
 ]
 CATEGORY_COLOR = {"sensor_fault": "blue", "regime_violation": "red", "unknown": "gray"}
 TOOL_RU = {
@@ -26,6 +27,7 @@ TOOL_RU = {
     "query_sensors": "Запрашиваю сводку датчиков",
     "detect_anomalies": "Запускаю детекторы",
     "get_requirement": "Беру текст нормы",
+    "search_norms": "Ищу в нормативных документах",
 }
 
 
@@ -59,6 +61,8 @@ def param_label(p):
 def render_result(result, key):
     report = result["report"]
     st.markdown(report["answer"])
+    if report.get("sources"):
+        st.caption("Источник: " + "; ".join(report["sources"]))
     checks = []
     if result.get("dropped_findings"):
         checks.append(f"отброшено находок без подтверждения детекторами: {result['dropped_findings']}")
@@ -128,7 +132,8 @@ with tab_chat:
     st.session_state.setdefault("messages", [])
     if not st.session_state.messages:
         st.info("Спросите о состоянии тепловых пунктов — агент сам выберет ИТП и период, запустит "
-                "детекторы и объяснит, что случилось и какую норму это нарушает. Ответ занимает 30–60 секунд.")
+                "детекторы и объяснит, что случилось и какую норму это нарушает. Можно спросить и о самих "
+                "нормах: «сколько часов может не быть горячей воды?» Ответ занимает 15–60 секунд.")
 
     for n, m in enumerate(st.session_state.messages):
         with st.chat_message(m["role"]):
