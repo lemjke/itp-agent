@@ -90,27 +90,36 @@ def simulate_substation(sid, idx, t_out, rng):
     })
 
 
-def apply_anomaly(df, kind, param, start, end):
+def apply_anomaly(df, kind, param, start, end, magnitude=None):
+    """Вносит аномалию. magnitude — сила (°C или бар); None — значения по умолчанию из сценария.
+
+    shift / drift / spike / high_return — добавка к параметру (для drift — к концу интервала);
+    underheat — снижение t1 (t2 снижается на 5/12 от него); dhw_low — на сколько ГВС ниже 60 °C;
+    frozen и gap силы не имеют — их «сила» задаётся длительностью интервала.
+    """
     m = (df["ts"] >= start) & (df["ts"] <= end)
-    k = m.sum()
+    k = int(m.sum())
     if kind == "shift":
-        df.loc[m, param] += 7
+        df.loc[m, param] += 7 if magnitude is None else magnitude
     elif kind == "drift":
-        df.loc[m, param] += np.linspace(0, 8, k)
+        df.loc[m, param] += np.linspace(0, 8 if magnitude is None else magnitude, k)
     elif kind == "spike":
-        df.loc[m, param] += {"t1": -25, "t2": 22, "p1": 2.5}.get(param, 15)
+        df.loc[m, param] += ({"t1": -25, "t2": 22, "p1": 2.5}.get(param, 15) if magnitude is None else magnitude)
     elif kind == "frozen":
         df.loc[m, param] = df.loc[m, param].iloc[0]
     elif kind == "gap":
         df.loc[m, [p for p in PARAMS if p != "t_outdoor"]] = np.nan
     elif kind == "underheat":
-        df.loc[m, "t1"] -= 12
-        df.loc[m, "t2"] -= 5
+        d = 12 if magnitude is None else magnitude
+        df.loc[m, "t1"] -= d
+        df.loc[m, "t2"] -= d * 5 / 12
     elif kind == "high_return":
-        df.loc[m, "t2"] += 7
-        df.loc[m, "flow"] *= 1.10
+        d = 7 if magnitude is None else magnitude
+        df.loc[m, "t2"] += d
+        df.loc[m, "flow"] *= 1 + d / 70
     elif kind == "dhw_low":
-        df.loc[m, "t_dhw"] = 55 + np.random.default_rng(1).normal(0, 0.5, k)
+        depth = 5 if magnitude is None else magnitude
+        df.loc[m, "t_dhw"] = 60 - depth + np.random.default_rng(1).normal(0, 0.5, k)
 
 
 def build():

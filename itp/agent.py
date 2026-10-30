@@ -171,18 +171,83 @@ def _run_tool(name, args):
         return {"error": f"Неверные аргументы: {exc}"}
 
 
-def ask(question, on_event=None, model=LLM_MODEL):
-    """Задать вопрос агенту. on_event(kind, payload) получает ход работы для отображения."""
-    emit = on_event or (lambda *_: None)
-    client = ollama.Client(host=LLM_HOST)
-    options = {"temperature": 0, "num_ctx": 8192}
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": question}]
-    trace = []
-    t0 = time.time()
+ARCHITECTURES = {
+    "react": "ReAct: модель сама выбирает следующий вызов по результатам предыдущих",
+    "plan": "План → выполнение: модель сразу составляет весь план вызовов, обвязка его выполняет",
+    "workflow": "Фиксированный workflow: модель только разбирает вопрос, вызовы делает код",
+}
 
+TOOL_NAMES = ["list_substations", "query_sensors", "detect_anomalies", "get_requirement"]
+PARAM_CODES = ["t_outdoor", "t1", "t2", "t_dhw", "p1", "p2", "flow"]
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {"steps": {"type": "array", "maxItems": 6, "items": {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": TOOL_NAMES},
+            "substation": {"type": "string", "description": "'ИТП-3', адрес или 'все'"},
+            "start": {"type": "string", "description": "YYYY-MM-DD"},
+            "end": {"type": "string", "description": "YYYY-MM-DD"},
+            "parameters": {"type": "array", "items": {"type": "string", "enum": PARAM_CODES}},
+        },
+        "required": ["tool"],
+    }}},
+    "required": ["steps"],
+}
+
+PLAN_INSTRUCTION = (
+    "Составь план вызовов инструментов, который нужен для ответа на вопрос, — сразу весь, "
+    "по одному шагу на вызов. Инструменты: list_substations (без аргументов); query_sensors(substation, "
+    "start, end, parameters) — значения параметров; detect_anomalies(substation, start, end) — поиск "
+    "проблем, substation может быть 'все'. Если вопрос не о тепловых пунктах — пустой план."
+)
+
+INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["diagnosis", "value", "offtopic"],
+                   "description": "diagnosis — найти проблемы; value — назвать значение параметра; "
+                                  "offtopic — вопрос не о тепловых пунктах"},
+        "substations": {"type": "array", "items": {"type": "string"},
+                        "description": "ИТП как в вопросе: 'ИТП-3', адрес или 'все'"},
+        "start": {"type": "string", "description": "YYYY-MM-DD"},
+        "end": {"type": "string", "description": "YYYY-MM-DD"},
+        "parameter": {"type": "string", "enum": PARAM_CODES + ["none"]},
+    },
+    "required": ["intent", "substations", "start", "end", "parameter"],
+}
+
+INTENT_INSTRUCTION = (
+    "Разбери вопрос: что спрашивают (intent), про какие ИТП, за какой период и, если спрашивают "
+    "значение, — какой параметр (t1 подача, t2 обратка, t_dhw ГВС, p1/p2 давления, flow расход, "
+    "t_outdoor наружная температура). Если период не указан — последняя неделя."
+)
+
+
+def _safe_json(text):
+    """JSON из ответа модели; обрезанный по лимиту токенов ответ — пустой словарь (ошибка засчитается агенту)."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _execute(name, args, trace, messages, emit):
+    emit("tool_call", {"name": name, "args": args})
+    result = _run_tool(name, args)
+    trace.append({"tool": name, "args": args, "result": result})
+    emit("tool_result", {"name": name, "result": result})
+    messages.append({"role": "user", "content": f"Результат {name}({json.dumps(args, ensure_ascii=False)}): "
+                                                + json.dumps(result, ensure_ascii=False, default=str)})
+    return result
+
+
+def _collect_react(client, model, messages, options, emit, chat_kw):
+    trace = []
     last_error, nudged = None, False
     for _ in range(MAX_STEPS):
-        resp = client.chat(model=model, messages=messages, tools=TOOL_SCHEMAS, options=options)
+        resp = client.chat(model=model, messages=messages, tools=TOOL_SCHEMAS, options=options, **chat_kw)
         msg = resp.message
         messages.append(msg)
         if not msg.tool_calls:
@@ -206,6 +271,60 @@ def ask(question, on_event=None, model=LLM_MODEL):
             emit("tool_result", {"name": name, "result": result})
             messages.append({"role": "tool", "tool_name": name,
                              "content": json.dumps(result, ensure_ascii=False, default=str)})
+    return trace
+
+
+def _collect_plan(client, model, messages, options, emit, chat_kw):
+    resp = client.chat(model=model, messages=messages + [{"role": "user", "content": PLAN_INSTRUCTION}],
+                       format=PLAN_SCHEMA, options={**options, "num_predict": 600}, **chat_kw)
+    steps = _safe_json(resp.message.content).get("steps", [])[:6]
+    emit("plan", {"steps": steps})
+    keys = {"list_substations": [], "query_sensors": ["substation", "start", "end", "parameters"],
+            "detect_anomalies": ["substation", "start", "end"]}
+    trace = []
+    for st in steps:
+        name = st.get("tool")
+        if name in keys:
+            args = {k: st[k] for k in keys[name] if st.get(k) not in (None, "", [])}
+            _execute(name, args, trace, messages, emit)
+    return trace
+
+
+def _collect_workflow(client, model, messages, options, emit, chat_kw):
+    resp = client.chat(model=model, messages=messages + [{"role": "user", "content": INTENT_INSTRUCTION}],
+                       format=INTENT_SCHEMA, options={**options, "num_predict": 300}, **chat_kw)
+    intent = _safe_json(resp.message.content)
+    emit("intent", intent)
+    trace = []
+    if intent.get("intent") == "offtopic":
+        return trace
+    for sub in (intent.get("substations") or ["все"])[:5]:
+        args = {"substation": sub, "start": intent.get("start", ""), "end": intent.get("end", "")}
+        if intent.get("intent") == "value" and intent.get("parameter") not in (None, "none"):
+            if str(sub).strip().lower() in ("все", "all", "*"):
+                continue
+            _execute("query_sensors", {**args, "parameters": [intent["parameter"]]}, trace, messages, emit)
+        else:
+            _execute("detect_anomalies", args, trace, messages, emit)
+    return trace
+
+
+COLLECTORS = {"react": _collect_react, "plan": _collect_plan, "workflow": _collect_workflow}
+
+
+def ask(question, on_event=None, model=LLM_MODEL, arch="react"):
+    """Задать вопрос агенту. on_event(kind, payload) получает ход работы для отображения.
+
+    arch — схема работы агента (см. ARCHITECTURES). Финальная стадия и все проверки общие.
+    """
+    emit = on_event or (lambda *_: None)
+    client = ollama.Client(host=LLM_HOST)
+    options = {"temperature": 0, "num_ctx": 8192}
+    chat_kw = {"think": False} if model.startswith("qwen3") else {}    # без «размышлений» — честное сравнение
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": question}]
+    t0 = time.time()
+
+    trace = COLLECTORS[arch](client, model, messages, options, emit, chat_kw)
 
     if not trace:
         # Модель не обратилась ни к одному инструменту — значит, вопрос вне темы.
@@ -216,16 +335,19 @@ def ask(question, on_event=None, model=LLM_MODEL):
                 "off_topic": True, "seconds": round(time.time() - t0, 1)}
 
     messages.append({"role": "user", "content": FINAL_INSTRUCTION})
-    resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=options)
-    raw = json.loads(resp.message.content)
+    final_opts = {**options, "num_predict": 2500}       # страховка от зацикливания структурированного вывода
+    resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=final_opts, **chat_kw)
+    raw = _safe_json(resp.message.content)
     if PLACEHOLDER.search(raw.get("answer", "")):
         # Модель вставила шаблон вместо числа — один раз просим переписать ответ
         emit("retry", {"error": "в ответе шаблон вместо значения"})
         messages += [{"role": "assistant", "content": resp.message.content},
                      {"role": "user", "content": "В answer ссылка на поле вместо значения. Перепиши answer, "
                                                  "подставив сами числа из ответа инструмента."}]
-        resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=options)
-        raw = json.loads(resp.message.content)
+        resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=final_opts, **chat_kw)
+        raw = _safe_json(resp.message.content)
+    for key, default in (("answer", ""), ("findings", []), ("recommendations", [])):
+        raw.setdefault(key, default)
     report, dropped = ground(raw, trace)          # находки без опоры на детекторы отбрасываются
     # Сообщения инструментов о сокращении периода доводим до пользователя в любом случае
     notes = list(dict.fromkeys(s["result"]["note"] for s in trace if s["result"].get("note")))

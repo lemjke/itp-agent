@@ -27,6 +27,8 @@ PARAM_NAMES = {
     "flow": "расход теплоносителя, т/ч",
 }
 MAX_DAYS = 120
+SPIKE_K = 4                # порог выброса: столько робастных σ от разности соседних часов
+SPIKE_FLOOR = 2.5          # и не меньше этого, °C (подбор — eval/eval_sensitivity.py, раздел о выбросах)
 CONTEXT_DAYS = 14         # история до периода — базовая линия и события, начавшиеся раньше
 
 
@@ -111,10 +113,7 @@ def _load(sid, start, end):
             "SELECT * FROM measurements WHERE substation_id = %s AND ts BETWEEN %s AND %s ORDER BY ts",
             con, params=(sid, start - pd.Timedelta(days=CONTEXT_DAYS), end),
         )
-    df = df.set_index("ts")
-    t_smooth = df["t_outdoor"].rolling(6, min_periods=1).mean()
-    df["t1_plan"], df["t2_plan"] = graph(t_smooth.values)
-    return df
+    return with_plan(df.set_index("ts"))
 
 
 def _fmt(ts):
@@ -240,27 +239,19 @@ def query_sensors(substation, start, end, parameters=None):
     return res
 
 
-def detect_anomalies(substation, start, end):
-    """Детекторы: пропуски, «замёрзшие» значения, выбросы, отклонения от графика и норм.
+def with_plan(df):
+    """Добавляет плановые t1/t2 по температурному графику (df с индексом ts)."""
+    t_smooth = df["t_outdoor"].rolling(6, min_periods=1).mean()
+    df["t1_plan"], df["t2_plan"] = graph(t_smooth.values)
+    return df
 
-    Для каждого события возвращается контекст — как в это время вели себя связанные
-    параметры. По нему агент отличает неисправность датчика от нарушения режима.
-    substation='все' — проверить все ИТП одним вызовом.
+
+def detect_events(df, sid, s, e):
+    """Все детекторы над часовыми данными одного ИТП (df с историей до s и плановыми t1/t2).
+
+    Возвращает события, пересекающиеся с [s, e]. Отделено от БД, чтобы прогонять
+    детекторы на синтетических рядах (eval/eval_sensitivity.py).
     """
-    if _is_all(substation):
-        with psycopg.connect(DB_DSN) as con:
-            ids = [r[0] for r in con.execute("SELECT id FROM substations ORDER BY id")]
-        parts = [detect_anomalies(i, start, end) for i in ids]
-        events = sorted((ev for p in parts for ev in p["events"]), key=lambda ev: (ev["start"], ev["substation"]))
-        res = {"substation": "все", "substations_checked": [p["substation"] for p in parts],
-               "period": parts[0]["period"], "events_found": len(events), "events": events}
-        if parts[0].get("note"):
-            res["note"] = parts[0]["note"]
-        return res
-
-    sid = _substation_id(substation)
-    s, e, note = _period(start, end)
-    df = _load(sid, s, e)
     events = []
 
     def add(kind, param, a, b, requirement, **evidence):
@@ -294,7 +285,7 @@ def detect_anomalies(substation, start, end):
         x = df[p]
         d_prev, d_next = x - x.shift(1), x - x.shift(-1)
         mad = (d_prev - d_prev.median()).abs().median() * 1.4826
-        thr = max(8 * mad, 1.0 if p in ("p1", "p2") else 4.0)
+        thr = max(SPIKE_K * mad, 1.0 if p in ("p1", "p2") else SPIKE_FLOOR)
         flag = (d_prev.abs() > thr) & (d_next.abs() > thr) & (np.sign(d_prev) == np.sign(d_next))
         spikes |= flag
         for a, b in _overlapping(_runs(flag), s, e):
@@ -359,6 +350,31 @@ def detect_anomalies(substation, start, end):
         add("low_pressure_drop", "p1,p2", a, b, "DP_MIN", min_dp=round(float(dp.loc[a:b].min()), 2))
 
     events.sort(key=lambda ev: ev["start"])
+    return events
+
+
+def detect_anomalies(substation, start, end):
+    """Детекторы: пропуски, «замёрзшие» значения, выбросы, отклонения от графика и норм.
+
+    Для каждого события возвращается контекст — как в это время вели себя связанные
+    параметры. По нему агент отличает неисправность датчика от нарушения режима.
+    substation='все' — проверить все ИТП одним вызовом.
+    """
+    if _is_all(substation):
+        with psycopg.connect(DB_DSN) as con:
+            ids = [r[0] for r in con.execute("SELECT id FROM substations ORDER BY id")]
+        parts = [detect_anomalies(i, start, end) for i in ids]
+        events = sorted((ev for p in parts for ev in p["events"]), key=lambda ev: (ev["start"], ev["substation"]))
+        res = {"substation": "все", "substations_checked": [p["substation"] for p in parts],
+               "period": parts[0]["period"], "events_found": len(events), "events": events}
+        if parts[0].get("note"):
+            res["note"] = parts[0]["note"]
+        return res
+
+    sid = _substation_id(substation)
+    s, e, note = _period(start, end)
+    df = _load(sid, s, e)
+    events = detect_events(df, sid, s, e)
     res = {"substation": f"ИТП-{sid}", "period": {"start": _fmt(s), "end": _fmt(e)},
            "events_found": len(events), "events": events}
     if note:

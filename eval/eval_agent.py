@@ -2,6 +2,7 @@
 
     python -m eval.eval_agent                 # все сценарии
     python -m eval.eval_agent S01 H03         # выборочно
+    python -m eval.eval_agent --model=qwen2.5:3b --arch=workflow   # другая модель / архитектура
 
 Результаты: eval/results/agent_<модель>_<время>.json и сводка eval/RESULTS.md.
 """
@@ -42,11 +43,11 @@ def true_value(scn):
     return round(float(getattr(x, scn["stat"])()), 1)
 
 
-def evaluate(scn, truth):
+def evaluate(scn, truth, model=LLM_MODEL, arch="react"):
     kind = scn.get("type", "diagnosis")
     t0 = time.time()
     try:
-        result = ask(scn["question"])
+        result = ask(scn["question"], model=model, arch=arch)
         error = None
     except Exception as exc:          # сбой модели/JSON — тоже результат
         result, error = {"report": {"answer": "", "findings": []}, "trace": [], "dropped_findings": 0}, str(exc)
@@ -184,12 +185,12 @@ def write_markdown(summary, rows, det):
     (OUT / "RESULTS.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main(ids):
+def main(ids, model=LLM_MODEL, arch="react"):
     truth = load_truth()
     scenarios = [s for s in SCENARIOS if not ids or s["id"] in ids]
     rows = []
     for scn in scenarios:
-        r = evaluate(scn, truth)
+        r = evaluate(scn, truth, model, arch)
         rows.append(r)
         print(f"{r['id']} {'OK ' if r['correct'] else 'ERR'} {r['type']:9} exp={r['expected']} found={r['found']} "
               f"tp={r['tp']} {r['seconds']} с {r['missed'] or ''} {r['extra'] or ''} "
@@ -198,14 +199,17 @@ def main(ids):
     det = run_detectors()
     (OUT / "results").mkdir(exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M")
-    path = OUT / "results" / f"agent_{LLM_MODEL.replace(':', '-')}_{stamp}.json"
-    path.write_text(json.dumps({"model": LLM_MODEL, "summary": summary, "rows": rows},
+    path = OUT / "results" / f"agent_{arch}_{model.replace(':', '-')}_{stamp}.json"
+    path.write_text(json.dumps({"model": model, "arch": arch, "summary": summary, "rows": rows},
                                ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    if not ids:
+    if not ids and model == LLM_MODEL and arch == "react":
         write_markdown(summary, rows, det)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return path
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    main(sys.argv[1:])
+    opts = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--"))
+    main([a for a in sys.argv[1:] if not a.startswith("--")],
+         model=opts.get("model", LLM_MODEL), arch=opts.get("arch", "react"))
