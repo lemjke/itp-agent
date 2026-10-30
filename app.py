@@ -41,6 +41,17 @@ def fmt_ts(ts):
         return str(ts)
 
 
+def period_label(result):
+    """«период: 7 сут., 22.02 00:00 — 28.02 23:00» — сколько данных реально проверено (обе даты включительно)."""
+    period = result.get("period") if isinstance(result, dict) else None
+    if not period:
+        return ""
+    s, e = pd.Timestamp(period["start"]), pd.Timestamp(period["end"])
+    hours = int((e - s) / pd.Timedelta(hours=1)) + 1
+    length = f"{hours // 24} сут." if hours % 24 == 0 else f"{hours} ч"
+    return f"период: {length}, {fmt_ts(s)} — {fmt_ts(e)}"
+
+
 def param_label(p):
     return {"*": "все параметры", "p1,p2": "давления"}.get(p, PARAM_NAMES.get(p, p))
 
@@ -81,6 +92,8 @@ def render_result(result, key):
     with st.expander(f"Ход работы агента · вызовов инструментов: {len(result['trace'])} · {result['seconds']} с"):
         for step in result["trace"]:
             st.markdown(f"`{step['tool']}({json.dumps(step['args'], ensure_ascii=False)})`")
+            if period_label(step["result"]):
+                st.caption(period_label(step["result"]))
             st.json(step["result"], expanded=False)
 
 
@@ -137,7 +150,8 @@ with tab_chat:
                         label = TOOL_RU.get(payload["name"], payload["name"])
                         status.write(f"{label} · `{args}`" if args else label)
                     elif kind == "tool_result" and "events_found" in payload["result"]:
-                        status.write(f"→ найдено событий: {payload['result']['events_found']}")
+                        status.write(f"→ {period_label(payload['result'])} · найдено событий: "
+                                     f"{payload['result']['events_found']}")
                     elif kind == "retry":
                         status.write(f"↺ Инструмент вернул ошибку, прошу модель исправить вызов: {payload['error']}")
                     elif kind == "report":
