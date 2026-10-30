@@ -7,6 +7,7 @@ import json
 import pandas as pd
 import streamlit as st
 
+from itp import history
 from itp.agent import CATEGORY_RU, ask
 from itp.charts import event_chart, overview_chart
 from itp.config import LLM_MODEL, NOW
@@ -101,6 +102,41 @@ def render_result(result, key):
             st.json(step["result"], expanded=False)
 
 
+def render_feedback(m):
+    """👍/👎 под ответом; оценка сразу пишется в БД."""
+    def save():
+        value = st.session_state[f"fb-{m['id']}"]
+        m["feedback"] = value
+        history.set_feedback(m["id"], value)
+    st.feedback("thumbs", key=f"fb-{m['id']}", default=m.get("feedback"), on_change=save)
+
+
+def open_chat(chat_id):
+    """Диалог из адреса страницы (?chat=…): переживает обновление страницы."""
+    st.session_state.chat_id, st.session_state.messages = chat_id, []
+    if not chat_id:
+        return
+    try:
+        for m in history.load(chat_id):
+            st.session_state.messages += [{"role": "user", "content": m["question"]},
+                                          {"role": "assistant", "result": m["result"], "id": m["id"],
+                                           "feedback": m["feedback"]}]
+    except Exception as exc:          # без истории чат всё равно работает
+        st.warning(f"Не удалось загрузить историю: {exc}")
+
+
+if "chat_id" not in st.session_state or st.session_state.chat_id != st.query_params.get("chat"):
+    open_chat(st.query_params.get("chat"))
+
+
+def switch_chat(chat_id):
+    if chat_id:
+        st.query_params["chat"] = chat_id
+    else:
+        st.query_params.clear()
+    open_chat(chat_id)
+
+
 # ---------- боковая панель ----------
 with st.sidebar:
     st.title("🌡️ ИТП-агент")
@@ -117,11 +153,21 @@ with st.sidebar:
     for q in EXAMPLES:
         if st.button(q, width="stretch"):
             st.session_state.pending = q
-    if st.button("Очистить диалог", type="tertiary"):
-        st.session_state.messages = []
     st.divider()
-    st.caption("Синтетические данные: 5 ИТП, 11 внесённых аномалий. "
-               "Нормы — демонстрационная таблица, требует проверки экспертом.")
+    st.markdown("**Диалоги**")
+    st.button("＋ Новый диалог", on_click=switch_chat, args=(None,), width="stretch")
+    try:
+        for c in history.chats():
+            title = c["title"] if len(c["title"]) <= 42 else c["title"][:40] + "…"
+            current = c["chat_id"] == st.session_state.chat_id
+            st.button(f"{title} · {c['count']}", key=f"chat-{c['chat_id']}", type="secondary" if current else "tertiary",
+                      on_click=switch_chat, args=(c["chat_id"],), width="stretch",
+                      help=f"Последний вопрос: {c['updated']:%d.%m %H:%M}")
+    except Exception as exc:
+        st.caption(f"История недоступна: {exc}")
+    st.divider()
+    st.caption("Синтетические данные: 5 ИТП, 11 внесённых аномалий. Нормы — действующие документы "
+               "(ПТЭ № 511, ПП № 354, ПП № 1034, СанПиН 2.1.3684-21); таблица порогов требует проверки экспертом.")
 
 tab_chat, tab_data = st.tabs(["Ассистент", "Данные"])
 # Поле ввода — вне вкладок, чтобы быть закреплённым внизу страницы
@@ -129,7 +175,6 @@ typed = st.chat_input("Например: что не так с ИТП-3 за п�
 
 # ---------- чат ----------
 with tab_chat:
-    st.session_state.setdefault("messages", [])
     if not st.session_state.messages:
         st.info("Спросите о состоянии тепловых пунктов — агент сам выберет ИТП и период, запустит "
                 "детекторы и объяснит, что случилось и какую норму это нарушает. Можно спросить и о самих "
@@ -141,6 +186,8 @@ with tab_chat:
                 st.markdown(m["content"])
             else:
                 render_result(m["result"], key=n)
+                if m.get("id"):
+                    render_feedback(m)
 
     question = typed or st.session_state.pop("pending", None)
     if question:
@@ -169,7 +216,16 @@ with tab_chat:
                     st.stop()
                 status.update(label=f"Готово за {result['seconds']} с", state="complete", expanded=False)
             render_result(result, key=len(st.session_state.messages))
-        st.session_state.messages.append({"role": "assistant", "result": result})
+            answer = {"role": "assistant", "result": result, "id": None, "feedback": None}
+            try:
+                if not st.session_state.chat_id:          # первый вопрос — диалог появляется в истории
+                    st.session_state.chat_id = history.new_chat_id()
+                    st.query_params["chat"] = st.session_state.chat_id
+                answer["id"] = history.save(st.session_state.chat_id, question, result, LLM_MODEL)
+                render_feedback(answer)
+            except Exception as exc:
+                st.warning(f"Ответ не сохранён в историю: {exc}")
+        st.session_state.messages.append(answer)
 
 # ---------- обзор данных ----------
 with tab_data:
