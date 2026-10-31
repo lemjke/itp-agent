@@ -61,6 +61,8 @@ def param_label(p):
 
 def render_result(result, key):
     report = result["report"]
+    if result.get("asked") and result.get("question") != result["asked"]:
+        st.caption(f"Понял вопрос как: «{result['question']}»")
     st.markdown(report["answer"])
     if report.get("sources"):
         st.caption("Источник: " + "; ".join(report["sources"]))
@@ -204,12 +206,20 @@ with tab_chat:
                     elif kind == "tool_result" and "events_found" in payload["result"]:
                         status.write(f"→ {period_label(payload['result'])} · найдено событий: "
                                      f"{payload['result']['events_found']}")
+                    elif kind == "rewrite":
+                        status.write(f"Уточнение с учётом диалога: «{payload['question']}»")
                     elif kind == "retry":
                         status.write(f"↺ Инструмент вернул ошибку, прошу модель исправить вызов: {payload['error']}")
                     elif kind == "report":
                         status.write("Формирую отчёт")
+                # Предыдущие пары диалога: вопрос — в том виде, как агент его понял, ответ — текст отчёта
+                # (вопрос без ответа — после сбоя агента — пропускаем)
+                past = st.session_state.messages[:-1]
+                history_turns = [{"question": a["result"].get("question", q["content"]),
+                                  "answer": a["result"]["report"]["answer"]}
+                                 for q, a in zip(past, past[1:]) if q["role"] == "user" and a["role"] == "assistant"]
                 try:
-                    result = ask(question, on_event=on_event)
+                    result = ask(question, on_event=on_event, history=history_turns)
                 except Exception as exc:
                     status.update(label="Ошибка", state="error")
                     st.error(f"Агент не смог ответить: {exc}. Запущен ли Ollama?")

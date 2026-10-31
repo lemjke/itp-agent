@@ -64,11 +64,12 @@ def true_value(scn):
     return round(float(getattr(x, scn["stat"])()), 1)
 
 
-def evaluate(scn, truth, model=LLM_MODEL, arch="react"):
+def evaluate(scn, truth, model=LLM_MODEL, arch="react", **ask_kw):
+    """ask_kw — history/context для диалоговых сценариев (eval/eval_dialog.py)."""
     kind = scn.get("type", "diagnosis")
     t0 = time.time()
     try:
-        result = ask(scn["question"], model=model, arch=arch)
+        result = ask(scn["question"], model=model, arch=arch, **ask_kw)
         error = None
     except Exception as exc:          # сбой модели/JSON — тоже результат
         result, error = {"report": {"answer": "", "findings": []}, "trace": [], "dropped_findings": 0}, str(exc)
@@ -79,7 +80,8 @@ def evaluate(scn, truth, model=LLM_MODEL, arch="react"):
            "dropped": result.get("dropped_findings", 0), "seconds": round(time.time() - t0, 1),
            "expected": 0, "tp": 0, "category_ok": 0, "requirement_ok": 0, "coverage": None,
            "missed": [], "extra": [], "wrong_category": [], "notes": [],
-           "trace": [{"tool": s["tool"], "args": s["args"]} for s in result["trace"]], "report": report}
+           "trace": [{"tool": s["tool"], "args": s["args"]} for s in result["trace"]], "report": report,
+           "understood_as": result.get("question", scn["question"])}
 
     if kind == "offtopic":
         row["correct"] = not error and not findings

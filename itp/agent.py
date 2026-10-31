@@ -12,7 +12,7 @@ import pandas as pd
 
 from .config import LLM_HOST, LLM_MODEL, NOW
 from .grounding import ground
-from .tools import TOOLS, ToolError
+from .tools import TOOLS, ToolError, _by_address
 
 MAX_STEPS = 8
 
@@ -325,7 +325,7 @@ def _collect_workflow(client, model, messages, options, emit, chat_kw):
     if intent.get("intent") == "offtopic":
         return trace
     if intent.get("intent") == "norm":          # запрос — сам вопрос пользователя, без переформулировки
-        _execute("search_norms", {"query": messages[1]["content"]}, trace, messages, emit)
+        _execute("search_norms", {"query": messages[-1]["content"]}, trace, messages, emit)
         return trace
     for sub in (intent.get("substations") or ["все"])[:5]:
         args = {"substation": sub, "start": intent.get("start", ""), "end": intent.get("end", "")}
@@ -340,18 +340,117 @@ def _collect_workflow(client, model, messages, options, emit, chat_kw):
 
 COLLECTORS = {"react": _collect_react, "plan": _collect_plan, "workflow": _collect_workflow}
 
+# ---------- контекст диалога ----------
+CONTEXT_MODES = {
+    "none": "без истории: каждый вопрос с нуля",
+    "rewrite": "уточнение переписывается в самостоятельный вопрос, дальше агент работает как обычно",
+    "messages": "предыдущие вопросы и ответы передаются модели как часть переписки",
+}
+HISTORY_TURNS = 3            # сколько последних пар «вопрос → ответ» учитывать
+HISTORY_ANSWER_CHARS = 300   # ответ в истории — только начало: модели нужен предмет разговора, а не детали
 
-def ask(question, on_event=None, model=LLM_MODEL, arch="react"):
+REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "refers_to_history": {"type": "boolean",
+                              "description": "true — новый вопрос неполный и ссылается на предыдущие («а за январь?», "
+                                             "«а на ИТП-4?», «а максимальная?», «подробнее про ИТП-3», «там»); "
+                                             "false — вопрос понятен сам по себе"},
+        "question": {"type": "string", "description": "самостоятельный вопрос (если refers_to_history)"},
+    },
+    "required": ["refers_to_history", "question"],
+}
+REWRITE_INSTRUCTION = (
+    "Тебе дают предыдущие вопросы пользователя об индивидуальных тепловых пунктах (ИТП) и новый вопрос. "
+    "Сначала реши, ссылается ли новый вопрос на предыдущие (refers_to_history). Вопрос о нормах и правилах "
+    "или вопрос, в котором уже названы ИТП и период, понятен сам по себе. Если ссылается — допиши в него "
+    "из предыдущих вопросов то, чего не хватает: номер ИТП или адрес, период, параметр. Сохрани слова и вид "
+    "вопроса пользователя: просьбу проверить или узнать, что не так, оставь проверкой, вопрос о значении — "
+    "вопросом о значении. Периоды бери дословно («за последнюю неделю», «в январе», «с 20 по 28 февраля»). "
+    "Не отвечай на вопрос и ничего не добавляй от себя."
+)
+# Самостоятельный вопрос — назван ИТП и период, нет отсылок к сказанному: переписывать нечего.
+# Проверяется кодом: модель иногда «уточняла» и такие вопросы, подставляя чужие даты.
+_PERIOD = re.compile(r"недел|\bдн[еяи]|вчера|сегодня|январ|феврал|март|декабр|зим|\d{1,2}\s*(?:по|-|—)\s*\d{1,2}|"
+                     r"\d{4}-\d\d|week|january|february|december|yesterday|today", re.I)
+_SUBSTATION = re.compile(r"итп\s*[-№]?\s*\d|тепловы\w* пункт|substation", re.I)
+# Отсылка, которой не заменят названные ИТП и период; «там», «она» при них — разговорные, не отсылки
+# («чо там с итп 2 10 февраля»)
+_REFERENCE = re.compile(r"\b(?:тот же|того же|то же|той же|тех же)\b", re.I)
+
+
+def self_contained(question):
+    has_sub = bool(_SUBSTATION.search(question) or _by_address(question))
+    return has_sub and bool(_PERIOD.search(question)) and not _REFERENCE.search(question)
+
+
+# Примеры для модели — на другие ИТП, периоды и параметры, чем в сценариях eval/dialogs.py
+REWRITE_EXAMPLES = [
+    ("Проверь ИТП-5 с 1 по 10 февраля", "А с 11 по 20?", True, "Проверь ИТП-5 с 11 по 20 февраля"),
+    ("Проверь ИТП-5 с 1 по 10 февраля", "Какое давление в системе ГВС допускается по правилам?", False, ""),
+    ("Проверь ИТП-5 с 1 по 10 февраля", "Что было на ИТП-2 вчера?", False, ""),
+    ("Проверь ИТП-5 с 1 по 10 февраля", "А давление там какое было?",
+     True, "Какое давление было на ИТП-5 с 1 по 10 февраля?"),
+    ("Проверь ИТП-5 с 1 по 10 февраля", "А ИТП-2 за то же время?", True, "Проверь ИТП-2 с 1 по 10 февраля"),
+    ("Какой перепад давлений положен по правилам?", "А на ИТП-5 вчера он был в норме?",
+     True, "Был ли перепад давлений на ИТП-5 вчера в норме?"),
+    ("Проверь ИТП-5 с 1 по 10 февраля", "Спасибо, а как дела?", False, ""),
+]
+
+
+def _rewrite_examples():
+    msgs = []
+    for prev, new, refers, rewritten in REWRITE_EXAMPLES:
+        msgs += [{"role": "user", "content": f"Предыдущие вопросы:\n1. {prev}\n\nНовый вопрос: {new}"},
+                 {"role": "assistant", "content": json.dumps({"refers_to_history": refers, "question": rewritten},
+                                                             ensure_ascii=False)}]
+    return msgs
+
+
+def contextualize(question, history, client, model, chat_kw=None):
+    """Уточняющий вопрос → самостоятельный («А за январь?» → «Что не так с ИТП-3 в январе?»).
+
+    Модель видит только предыдущие вопросы, без ответов: из ответов она переносила в вопрос даты,
+    проценты и даже сам ответ.
+    """
+    if self_contained(question):
+        return question
+    previous = "\n".join(f"{i}. {h['question']}" for i, h in enumerate(history[-HISTORY_TURNS:], 1))
+    prompt = f"Предыдущие вопросы:\n{previous}\n\nНовый вопрос: {question}"
+    messages = [{"role": "system", "content": REWRITE_INSTRUCTION}, *_rewrite_examples(),
+                {"role": "user", "content": prompt}]
+    resp = client.chat(model=model, messages=messages, format=REWRITE_SCHEMA,
+                       options={"temperature": 0, "num_predict": 150}, **(chat_kw or {}))
+    out = _safe_json(resp.message.content)
+    rewritten = str(out.get("question", "")).strip()
+    # «Не трогать» решает код по флагу, а не модель, переписывая вопрос «без изменений»: 7B-модель
+    # на просьбу вернуть вопрос как есть всё равно приклеивала к нему ИТП и период из истории.
+    return rewritten if out.get("refers_to_history") is True and rewritten else question
+
+
+def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, context="rewrite"):
     """Задать вопрос агенту. on_event(kind, payload) получает ход работы для отображения.
 
     arch — схема работы агента (см. ARCHITECTURES). Финальная стадия и все проверки общие.
+    history — предыдущие пары [{"question", "answer"}] этого диалога (question — уже самостоятельный вопрос),
+    context — как их учитывать (см. CONTEXT_MODES).
     """
     emit = on_event or (lambda *_: None)
     client = ollama.Client(host=LLM_HOST)
     options = {"temperature": 0, "num_ctx": 8192}
     chat_kw = {"think": False} if model.startswith("qwen3") else {}    # без «размышлений» — честное сравнение
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": question}]
     t0 = time.time()
+    original, history = question, (history or [])[-HISTORY_TURNS:]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history and context == "rewrite":
+        question = contextualize(question, history, client, model, chat_kw)
+        if question != original:
+            emit("rewrite", {"question": question})
+    elif history and context == "messages":
+        for h in history:
+            messages += [{"role": "user", "content": h["question"]},
+                         {"role": "assistant", "content": h["answer"][:HISTORY_ANSWER_CHARS]}]
+    messages.append({"role": "user", "content": question})
 
     trace = COLLECTORS[arch](client, model, messages, options, emit, chat_kw)
 
@@ -361,7 +460,7 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react"):
         report = {"answer": OFF_TOPIC_ANSWER, "findings": [], "recommendations": []}
         emit("report", report)
         return {"report": report, "trace": trace, "dropped_findings": 0, "unverified_numbers": [],
-                "off_topic": True, "seconds": round(time.time() - t0, 1)}
+                "off_topic": True, "asked": original, "question": question, "seconds": round(time.time() - t0, 1)}
 
     messages.append({"role": "user", "content": FINAL_INSTRUCTION})
     final_opts = {**options, "num_predict": 2500}       # страховка от зацикливания структурированного вывода
@@ -384,8 +483,8 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react"):
         report["answer"] += "\n\nℹ️ " + " ".join(n.replace(" Сообщи это пользователю.", "") for n in notes)
     emit("report", report)
     return {"report": report, "trace": trace, "dropped_findings": dropped,
-            "unverified_numbers": unverified_numbers(report, question, trace),
-            "off_topic": False, "seconds": round(time.time() - t0, 1)}
+            "unverified_numbers": unverified_numbers(report, f"{original} {question}", trace),
+            "off_topic": False, "asked": original, "question": question, "seconds": round(time.time() - t0, 1)}
 
 
 CATEGORY_RU = {"sensor_fault": "неисправность измерений", "regime_violation": "нарушение режима",
