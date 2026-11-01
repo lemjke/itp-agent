@@ -32,8 +32,12 @@ ARCH_COLOR = {"react": "#2a78d6", "plan": "#eb6834", "workflow": "#1baf7a"}   # 
 
 
 def latest(arch, model):
-    files = sorted(RESULTS.glob(f"agent_{arch}_{model.replace(':', '-')}_*.json"))
-    return json.loads(files[-1].read_text(encoding="utf-8")) if files else None
+    """Последний полный прогон (выборочные — eval_agent S01 H03 — пропускаются)."""
+    for f in sorted(RESULTS.glob(f"agent_{arch}_{model.replace(':', '-')}_*.json"), reverse=True):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if data["summary"]["scenarios"] >= 30:
+            return data
+    return None
 
 
 def collect():
