@@ -12,7 +12,10 @@ import pandas as pd
 
 from .config import LLM_HOST, LLM_MODEL, NOW
 from .grounding import ground
-from .tools import TOOLS, ToolError, _by_address
+from .compare import compare_periods
+from .tools import TOOLS as BASE_TOOLS, ToolError, _by_address
+
+TOOLS = {**BASE_TOOLS, "compare_periods": compare_periods}
 
 MAX_STEPS = 8
 
@@ -53,6 +56,9 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    - ГВС ниже 60 °C или выше 75 °C — category=regime_violation: нарушение режима ГВС;
    - пропуск данных, «замёрзшее» значение, одиночный выброс — category=sensor_fault: проблема измерений
      или связи.
+   Поле suspicions в ответе detect_anomalies — статистические подозрения без нарушения норм (например,
+   небольшое смещение датчика, которое проверка по нормам не видит). Упомяни их в answer отдельной фразой
+   как требующие проверки, в findings не включай.
 6. Вопрос о нормах и правилах («какая норма…», «допустимо ли…», «сколько можно…», «что положено…»,
    «что делать по правилам…») — вызови search_norms. В query пиши официальными терминами документов:
    «подающий трубопровод», а не «подача»; «обратный трубопровод», а не «обратка»; «горячее водоснабжение»,
@@ -61,7 +67,10 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    Вопрос о допустимости значения без ИТП и периода («давление 0,7 МПа в кране — это нормально?», «подача
    на 2 % ниже графика — допустимо?») — тоже вопрос о норме: search_norms, а не detect_anomalies. В ответе
    назови предельное значение из пункта и сравни с ним значение из вопроса.
-7. Отвечай по-русски, коротко и по делу.
+7. Сравнение двух периодов одного ИТП («сравни январь и февраль», «стало ли лучше, чем в прошлом месяце»)
+   — вызови compare_periods. В answer назови главные изменения числами из change: часы вне нормы, события,
+   тепло на градусо-сутки. Сырое тепло за период зависит от погоды — сравнивай тепло на градусо-сутки.
+8. Отвечай по-русски, коротко и по делу.
 """
 
 TOOL_SCHEMAS = [
@@ -98,6 +107,18 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "code": {"type": "string", "description": "Код требования, например 'T2_SCHEDULE'"},
         }, "required": ["code"]},
+    }},
+    {"type": "function", "function": {
+        "name": "compare_periods",
+        "description": "Сравнить два периода одного ИТП: отклонения от графика, часы вне нормы, события детекторов, "
+                       "тепло (в том числе на градусо-сутки, с поправкой на погоду).",
+        "parameters": {"type": "object", "properties": {
+            "substation": {"type": "string", "description": "Номер ИТП, например 'ИТП-3', или адрес"},
+            "start_1": {"type": "string", "description": "Начало первого периода, YYYY-MM-DD"},
+            "end_1": {"type": "string", "description": "Конец первого периода, YYYY-MM-DD"},
+            "start_2": {"type": "string", "description": "Начало второго периода, YYYY-MM-DD"},
+            "end_2": {"type": "string", "description": "Конец второго периода, YYYY-MM-DD"},
+        }, "required": ["substation", "start_1", "end_1", "start_2", "end_2"]},
     }},
     {"type": "function", "function": {
         "name": "search_norms",

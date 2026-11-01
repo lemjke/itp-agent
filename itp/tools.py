@@ -11,7 +11,7 @@ import pandas as pd
 import psycopg
 
 from .config import DATA_END, DATA_START, DB_DSN
-from . import rag
+from . import ml_detect, rag
 from .norms import BY_CODE
 from .schedule import graph
 
@@ -368,6 +368,9 @@ def detect_anomalies(substation, start, end):
         events = sorted((ev for p in parts for ev in p["events"]), key=lambda ev: (ev["start"], ev["substation"]))
         res = {"substation": "все", "substations_checked": [p["substation"] for p in parts],
                "period": parts[0]["period"], "events_found": len(events), "events": events}
+        sus = [{"substation": p["substation"], **x} for p in parts for x in p.get("suspicions", [])]
+        if sus:
+            res["suspicions"] = sus
         if parts[0].get("note"):
             res["note"] = parts[0]["note"]
         return res
@@ -378,6 +381,10 @@ def detect_anomalies(substation, start, end):
     events = detect_events(df, sid, s, e)
     res = {"substation": f"ИТП-{sid}", "period": {"start": _fmt(s), "end": _fmt(e)},
            "events_found": len(events), "events": events}
+    # Статистика по согласованности параметров: то, чего правила по нормам не видят (itp/ml_detect.py)
+    sus = ml_detect.suspicions(df, events, s, e)
+    if sus:
+        res["suspicions"] = sus
     if note:
         res["note"] = note
     return res

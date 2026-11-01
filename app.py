@@ -9,7 +9,8 @@ import streamlit as st
 
 from itp import history
 from itp.agent import CATEGORY_RU, ask
-from itp.charts import event_chart, overview_chart
+from itp.charts import CORRIDOR, compare_bars, event_chart, overview_chart, period_chart, period_frame, PERIOD_COLORS
+from itp.compare import METRICS, compare_periods
 from itp.config import LLM_MODEL, NOW
 from itp.tools import PARAM_NAMES, list_substations
 
@@ -29,6 +30,7 @@ TOOL_RU = {
     "detect_anomalies": "Запускаю детекторы",
     "get_requirement": "Беру текст нормы",
     "search_norms": "Ищу в нормативных документах",
+    "compare_periods": "Сравниваю периоды",
 }
 
 
@@ -91,6 +93,13 @@ def render_result(result, key):
                                 width="stretch", key=f"chart-{key}-{i}")
             except Exception as exc:  # график — вспомогательный, ответ показываем в любом случае
                 st.caption(f"График недоступен: {exc}")
+
+    suspicions = [x for s in result["trace"] if s["tool"] == "detect_anomalies"
+                  for x in (s.get("result") or {}).get("suspicions", [])]
+    if suspicions:
+        st.markdown("**Требует проверки** — статистика, без нарушения норм")
+        st.markdown("\n".join(f"- {x.get('substation', '')} {fmt_ts(x['start'])} — {fmt_ts(x['end'])}: {x['summary']}"
+                              for x in suspicions))
 
     if report.get("recommendations"):
         st.markdown("**Рекомендации**")
@@ -171,7 +180,7 @@ with st.sidebar:
     st.caption("Синтетические данные: 5 ИТП, 11 внесённых аномалий. Нормы — действующие документы "
                "(ПТЭ № 511, ПП № 354, ПП № 1034, СанПиН 2.1.3684-21); таблица порогов требует проверки экспертом.")
 
-tab_chat, tab_data = st.tabs(["Ассистент", "Данные"])
+tab_chat, tab_data, tab_cmp = st.tabs(["Ассистент", "Данные", "Сравнение периодов"])
 # Поле ввода — вне вкладок, чтобы быть закреплённым внизу страницы
 typed = st.chat_input("Например: что не так с ИТП-3 за последнюю неделю?")
 
@@ -246,3 +255,62 @@ with tab_data:
     if isinstance(period, tuple) and len(period) == 2 and params:
         st.altair_chart(overview_chart(sub, period[0], period[1], params), width="stretch")
         st.caption("Пунктир — плановое значение по температурному графику.")
+
+# ---------- сравнение периодов ----------
+with tab_cmp:
+    names = [s["name"] for s in info["substations"]]
+    lo, hi = pd.Timestamp(info["data_period"]["start"]).date(), pd.Timestamp(info["data_period"]["end"]).date()
+    c1, c2, c3, c4 = st.columns([1, 1.4, 2, 2])
+    sub = c1.selectbox("ИТП", names, index=2, key="cmp_sub")
+    param = c2.selectbox("Параметр", ["t1", "t2", "t_dhw", "flow"], index=1, format_func=PARAM_NAMES.get,
+                         key="cmp_param")
+    pa = c3.date_input("Первый период", value=(lo, pd.Timestamp("2026-01-31").date()), min_value=lo, max_value=hi,
+                       key="cmp_a")
+    pb = c4.date_input("Второй период", value=(pd.Timestamp("2026-02-01").date(), hi), min_value=lo, max_value=hi,
+                       key="cmp_b")
+    if all(isinstance(p, tuple) and len(p) == 2 for p in (pa, pb)):
+        label = lambda p: f"{p[0]:%d.%m} — {p[1]:%d.%m}"  # noqa: E731
+        frames = [period_frame(sub, p[0], p[1], param) for p in (pa, pb)]
+        cols = [c for c in ("value", "lo", "hi") if c in frames[0]]
+        vals = pd.concat([f[cols] for f in frames]).stack()
+        pad = (vals.max() - vals.min()) * 0.05
+        domain = [float(vals.min() - pad), float(vals.max() + pad)]      # одна шкала — графики сравнимы
+        g1, g2 = st.columns(2)
+        for col, frame, p, color in zip((g1, g2), frames, (pa, pb), PERIOD_COLORS):
+            col.altair_chart(period_chart(frame, label(p), color, domain), width="stretch")
+        if param in CORRIDOR:
+            st.caption(f"Зелёная полоса — коридор нормы ({CORRIDOR[param]}), пунктир — температурный график.")
+
+        cmp = compare_periods(sub, *(f"{d:%Y-%m-%d}" for d in (*pa, *pb)))
+        a_lbl, b_lbl = label(pa), label(pb)
+        bars = [{"metric": METRICS[k][0].replace("Часов: ", ""), "period": lbl, "value": cmp[pk][k]}
+                for k in ("hours_t1_out", "hours_t2_out", "hours_dhw_out", "hours_missing")
+                for pk, lbl in (("period_1", a_lbl), ("period_2", b_lbl))]
+        types = sorted(set(cmp["period_1"]["events_by_type"]) | set(cmp["period_2"]["events_by_type"]))
+        ev_bars = [{"metric": t, "period": lbl, "value": cmp[pk]["events_by_type"].get(t, 0)}
+                   for t in types for pk, lbl in (("period_1", a_lbl), ("period_2", b_lbl))]
+        b1, b2 = st.columns(2)
+        b1.markdown("**Часов вне нормы**")
+        b1.altair_chart(compare_bars(bars), width="stretch")
+        b2.markdown("**События детекторов по типам**")
+        if ev_bars:
+            b2.altair_chart(compare_bars(ev_bars), width="stretch")
+        else:
+            b2.caption("В обоих периодах событий нет.")
+
+        def fmt(v, d):
+            if v is None:
+                return "—"
+            v = 0.0 if abs(v) < 0.5 * 10 ** -d else v          # без «−0,0»
+            return f"{v:,.{d}f}".replace(",", " ").replace(".", ",")
+        rows = []
+        for k, (title, unit, digits) in METRICS.items():
+            ch = cmp["change"].get(k, {})
+            diff = ch.get("diff")
+            rows.append({"Показатель": title + (f", {unit}" if unit else ""), a_lbl: fmt(cmp["period_1"][k], digits),
+                         b_lbl: fmt(cmp["period_2"][k], digits),
+                         "Изменение": ("" if diff is None else ("+" if diff > 0 else "") + fmt(diff, digits))
+                                      + (f" ({ch['pct']:+d} %)" if "pct" in ch else "")})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.caption("Тепло за период зависит от погоды; сравнивайте тепло на градусо-сутки "
+                   f"(градусо-сутки: {fmt(cmp['period_1']['degree_days'], 0)} → {fmt(cmp['period_2']['degree_days'], 0)}).")

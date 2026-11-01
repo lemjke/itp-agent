@@ -24,10 +24,39 @@ from itp.config import DB_DSN, LLM_MODEL
 
 OUT = Path(__file__).resolve().parent
 GROUPS = {"S": "Диагностика", "N": "Проблем нет", "A": "Нетипичные (на них дорабатывался агент)",
-          "H": "Отложенный набор (агент на нём не настраивался)", "R": "Вопросы о нормах (поиск по документам)"}
+          "H": "Отложенный набор (агент на нём не настраивался)", "R": "Вопросы о нормах (поиск по документам)",
+          "C": "Сравнение периодов"}
 VALUE_TOL = 0.15
 CITE = {"PTE511": ("511", "технической эксплуатации"), "PP354": ("354", "коммунальных услуг"),
         "PP1034": ("1034", "коммерческого учета", "коммерческого учёта"), "SANPIN3684": ("3684", "санпин")}
+
+
+def _near(a, b, days=1):
+    try:
+        return abs(pd.Timestamp(a).normalize() - pd.Timestamp(b)) <= pd.Timedelta(days=days)
+    except (ValueError, TypeError):
+        return False
+
+
+def evaluate_compare(scn, row, result):
+    """Сравнение периодов: верный вызов compare_periods, главное изменение в ответе, без непроверенных чисел."""
+    (a1, b1), (a2, b2) = scn["periods"]
+    called = any(s["tool"] == "compare_periods" and _sid(s["args"].get("substation")) == scn["substation"]
+                 and _near(s["args"].get("start_1"), a1) and _near(s["args"].get("end_1"), b1)
+                 and _near(s["args"].get("start_2"), a2) and _near(s["args"].get("end_2"), b2)
+                 and "error" not in s["result"] for s in result["trace"])
+    if not called and any(s["tool"] == "compare_periods" for s in result["trace"]):
+        # Адрес вместо номера — сверяем с ИТП, который вернул инструмент
+        called = any(s["tool"] == "compare_periods" and s["result"].get("substation") == f"ИТП-{scn['substation']}"
+                     and _near(s["args"].get("start_1"), a1) and _near(s["args"].get("end_2"), b2)
+                     for s in result["trace"])
+    mentioned = any(k in row["answer"].lower() for k in scn["keywords"])
+    unverified = result.get("unverified_numbers", [])
+    row["correct"] = not row["error"] and called and mentioned and not unverified
+    row["notes"] += ([] if called else ["compare_periods не вызван или не те периоды"]) + \
+                    ([] if mentioned else [f"нет главного изменения ({'/'.join(scn['keywords'])})"]) + \
+                    ([f"непроверенные числа {unverified}"] if unverified else [])
+    return row
 
 
 def evaluate_norm(scn, row, trace):
@@ -91,6 +120,9 @@ def evaluate(scn, truth, model=LLM_MODEL, arch="react", **ask_kw):
 
     if kind == "norm":
         return evaluate_norm(scn, row, result["trace"])
+
+    if kind == "compare":
+        return evaluate_compare(scn, row, result)
 
     if kind == "value":
         expected_value = true_value(scn)
