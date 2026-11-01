@@ -96,15 +96,23 @@ def compare_bars(rows, height=240):
     top = max(int(data["value"].max()), 1)
     step = max(1, round(top / 5))
     ticks = list(range(0, top + step, step))              # часы и события — целые деления
-    return alt.Chart(data).mark_bar().encode(
+    # Нулевое значение — короткий штрих цвета периода: иначе «в январе 0» неотличимо от «январь не посчитан»
+    data["bar"] = data["value"].where(data["value"] > 0, ticks[-1] * 0.008)
+    data["label"] = data["value"].map(lambda v: f"{v:g}")
+    scale_x = alt.Scale(domain=[0, ticks[-1] * 1.08])      # место для подписи у самой длинной полосы
+    base = alt.Chart(data).encode(
         y=alt.Y("metric:N", title=None, sort=None, axis=alt.Axis(labelLimit=320)),
         yOffset=alt.YOffset("period:N", sort=periods),
-        x=alt.X("value:Q", title=None, scale=alt.Scale(domain=[0, ticks[-1]]), axis=alt.Axis(values=ticks, format="d")),
         color=alt.Color("period:N", title=None, sort=periods,
                         scale=alt.Scale(domain=periods, range=PERIOD_COLORS), legend=alt.Legend(orient="top")),
         tooltip=[alt.Tooltip("metric:N", title="показатель"), alt.Tooltip("period:N", title="период"),
                  alt.Tooltip("value:Q", title="значение")],
-    ).properties(height=height)
+    )
+    bars = base.mark_bar().encode(x=alt.X("bar:Q", title=None, scale=scale_x,
+                                          axis=alt.Axis(values=ticks, format="d")))
+    labels = base.mark_text(align="left", dx=4, fontSize=11, fontWeight="bold").encode(
+        x=alt.X("bar:Q", scale=scale_x), text="label:N")
+    return (bars + labels).properties(height=height)
 
 
 def overview_chart(substation, start, end, params, height=320):
