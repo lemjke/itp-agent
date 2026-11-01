@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .claude/
 itp/local_config.py
+.pytest_cache/

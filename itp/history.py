@@ -72,5 +72,15 @@ def chats(limit=15):
 
 
 def set_feedback(message_id, value):
+    """Оценка ответа; False — такого сообщения нет."""
     with _con() as con:
-        con.execute("UPDATE chat_messages SET feedback = %s WHERE id = %s", (value, message_id))
+        return con.execute("UPDATE chat_messages SET feedback = %s WHERE id = %s", (value, message_id)).rowcount > 0
+
+
+def as_turns(pairs):
+    """Пары (вопрос пользователя, результат ask) → история для ask(history=…).
+
+    Вопрос берётся в том виде, как агент его понял (уже самостоятельным), ответ — текст отчёта.
+    """
+    return [{"question": result.get("question", question), "answer": result["report"]["answer"]}
+            for question, result in pairs]

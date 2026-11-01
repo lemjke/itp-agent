@@ -212,12 +212,10 @@ with tab_chat:
                         status.write(f"↺ Инструмент вернул ошибку, прошу модель исправить вызов: {payload['error']}")
                     elif kind == "report":
                         status.write("Формирую отчёт")
-                # Предыдущие пары диалога: вопрос — в том виде, как агент его понял, ответ — текст отчёта
-                # (вопрос без ответа — после сбоя агента — пропускаем)
+                # Предыдущие пары диалога (вопрос без ответа — после сбоя агента — пропускаем)
                 past = st.session_state.messages[:-1]
-                history_turns = [{"question": a["result"].get("question", q["content"]),
-                                  "answer": a["result"]["report"]["answer"]}
-                                 for q, a in zip(past, past[1:]) if q["role"] == "user" and a["role"] == "assistant"]
+                history_turns = history.as_turns((q["content"], a["result"]) for q, a in zip(past, past[1:])
+                                                 if q["role"] == "user" and a["role"] == "assistant")
                 try:
                     result = ask(question, on_event=on_event, history=history_turns)
                 except Exception as exc:
