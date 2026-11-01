@@ -1,0 +1,74 @@
+# ИТП-агент целиком: PostgreSQL + pgvector, подготовка данных, веб-интерфейс и REST API.
+#
+#   docker compose up                    # LLM — Ollama, установленный на компьютере (обычный случай на Windows)
+#   docker compose --profile ollama up   # LLM тоже в контейнере (сервер с NVIDIA GPU); задайте OLLAMA_HOST=http://ollama:11434
+#
+# Веб-интерфейс: http://localhost:8501, API: http://localhost:8000/docs
+
+x-app: &app
+  build: .
+  environment:
+    ITP_DB_DSN: host=db port=5432 dbname=itp_db user=postgres password=${POSTGRES_PASSWORD:-itp}
+    ITP_DB_ADMIN_DSN: host=db port=5432 dbname=postgres user=postgres password=${POSTGRES_PASSWORD:-itp}
+    OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+  extra_hosts:
+    - host.docker.internal:host-gateway      # для Linux; в Docker Desktop это имя есть и так
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg18
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-itp}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 5s
+      retries: 20
+
+  # Данные и индекс норм — один раз при первом запуске (индекс: ~1,5 мин на GPU)
+  init:
+    <<: *app
+    command: python -m data.bootstrap
+    depends_on:
+      db: { condition: service_healthy }
+      # с профилем ollama индексу норм нужны скачанные модели; без профиля зависимость пропускается
+      ollama-pull: { condition: service_completed_successfully, required: false }
+    restart: "no"
+
+  app:
+    <<: *app
+    ports: ["8501:8501"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+  api:
+    <<: *app
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+  # --- LLM в контейнере (профиль ollama) ---
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ollama]
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: [ollama]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["sh", "-c", "until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull qwen2.5:7b && ollama pull bge-m3"]
+    depends_on: [ollama]
+    restart: "no"
+
+volumes:
+  pgdata:
+  ollama:

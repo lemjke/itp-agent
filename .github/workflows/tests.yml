@@ -19,6 +19,7 @@ jobs:
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       PGPASSWORD: ci
+      REQUIRE_DB: "1"          # тесты с БД должны выполниться, а не пропуститься
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,3 +32,14 @@ jobs:
         run: python -m data.generate
       - name: Тесты
         run: python -m pytest -v
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Проверка compose.yaml
+        run: docker compose config --quiet && docker compose --profile ollama config --quiet
+      - name: Сборка образа
+        run: docker build -t itp-agent .
+      - name: Код в образе импортируется
+        run: docker run --rm itp-agent python -c "import api, data.bootstrap; print('ok')"

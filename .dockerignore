@@ -1,0 +1,10 @@
+.venv/
+.git/
+.github/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+itp/local_config.py
+eval/results/
+docs/*.png
