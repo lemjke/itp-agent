@@ -31,11 +31,14 @@ ARCH_RU = {"react": "ReAct", "plan": "План → выполнение", "workf
 ARCH_COLOR = {"react": "#2a78d6", "plan": "#eb6834", "workflow": "#1baf7a"}   # слоты 1–3 эталонной палитры
 
 
+SCENARIOS_IN_EXPERIMENT = 30     # набор на момент сравнения; позже добавлялись нормы и сравнение периодов
+
+
 def latest(arch, model):
-    """Последний полный прогон (выборочные — eval_agent S01 H03 — пропускаются)."""
+    """Последний прогон этого эксперимента: тот же набор сценариев (выборочные и более поздние — мимо)."""
     for f in sorted(RESULTS.glob(f"agent_{arch}_{model.replace(':', '-')}_*.json"), reverse=True):
         data = json.loads(f.read_text(encoding="utf-8"))
-        if data["summary"]["scenarios"] >= 30:
+        if data["summary"]["scenarios"] == SCENARIOS_IN_EXPERIMENT:
             return data
     return None
 
