@@ -1,5 +1,7 @@
 # ИТП-агент: диагностика тепловых пунктов на локальной LLM
 
+[![tests](https://github.com/lemjke/itp-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/lemjke/itp-agent/actions/workflows/tests.yml)
+
 Прототип агентной системы, которая отвечает на вопросы инженера по эксплуатации
 индивидуальных тепловых пунктов (ИТП): находит отклонения в данных датчиков, определяет
 вероятную причину (неисправность датчика или нарушение режима) и ссылается на нарушенное
@@ -347,6 +349,47 @@ docs/norms/*.txt ──► нарезка по пунктам ──► bge-m3 (
 
 ## Запуск
 
+### Docker Compose
+
+Нужны Docker и [Ollama](https://ollama.com) с моделями `qwen2.5:7b` и `bge-m3` (`ollama pull …`).
+База с pgvector, данные, индекс норм, веб-интерфейс и API поднимаются одной командой:
+
+```bash
+docker compose up --build
+```
+
+Веб-интерфейс — http://localhost:8501, API — http://localhost:8000/docs. При первом запуске сервис `init`
+генерирует данные и строит индекс норм (~1,5 мин на GPU), при следующих — пропускает.
+На сервере с NVIDIA GPU LLM тоже можно запустить в контейнере (модели скачаются при первом запуске):
+
+```bash
+OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up --build
+```
+
+### REST API
+
+```bash
+.venv\Scripts\uvicorn api:app --port 8000          # документация: http://localhost:8000/docs
+```
+
+| Метод | Что делает |
+|---|---|
+| `POST /ask` | вопрос агенту; `chat_id` — продолжить диалог («а за январь?») |
+| `GET /chats`, `GET /chats/{id}` | история диалогов |
+| `POST /messages/{id}/feedback` | оценка ответа: 1 — 👍, 0 — 👎 |
+| `GET /health` | доступны ли БД, Ollama и модели |
+
+### Тесты
+
+`python -m pytest` — 47 тестов без LLM, ~4 с: детекторы (эталон 11 из 11, ноль событий на чистых рядах),
+проверки ответа модели (находки, источники, числа), разбор вопроса и периодов, нарезка норм,
+API с подменённым агентом. Тестам с меткой `db` нужна БД с данными, без неё они пропускаются.
+На каждый push GitHub Actions поднимает PostgreSQL с pgvector, генерирует данные и прогоняет тесты
+(пропускать тесты с БД там запрещено — `REQUIRE_DB`), а также собирает Docker-образ.
+Качество ответов LLM этими тестами не проверяется — это делает `eval/` (нужна модель, десятки минут).
+
+### Без Docker
+
 Нужны Python 3.11+, PostgreSQL с расширением [pgvector](https://github.com/pgvector/pgvector)
 и [Ollama](https://ollama.com). Хватает ноутбука с GPU на 6 ГБ.
 
@@ -354,7 +397,7 @@ docs/norms/*.txt ──► нарезка по пунктам ──► bge-m3 (
 ollama pull qwen2.5:7b
 ollama pull bge-m3                                                     # эмбеддинги для поиска норм
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements-dev.txt
 .venv\Scripts\python -m data.generate                                  # БД itp_db + данные
 .venv\Scripts\python -m data.norms_index                               # индекс норм в pgvector (~1,5 мин)
 .venv\Scripts\streamlit run app.py                                     # веб-интерфейс (или run_app.bat)
@@ -399,10 +442,15 @@ itp/
 data/generate.py      генератор синтетических данных с аномалиями
 data/norms_corpus.py  сбор текстов нормативных документов → docs/norms/
 data/norms_index.py   нарезка, эмбеддинги, таблица norm_chunks
-eval/              сценарии, метрики, поиск норм, чувствительность детекторов, сравнение архитектур
+data/bootstrap.py     подготовка БД при первом запуске (Docker)
+eval/              сценарии и оценка LLM: агент, поиск норм, диалоги, чувствительность, сравнение архитектур
+tests/             быстрые тесты без LLM (pytest), запускаются в CI
 app.py             веб-интерфейс (Streamlit)
+api.py             REST API (FastAPI)
 cli.py             командная строка
 run_app.bat        запуск веб-интерфейса двойным кликом (Windows)
+Dockerfile, compose.yaml           контейнеры: БД, подготовка данных, интерфейс, API, Ollama (профиль)
+.github/workflows/tests.yml        CI: тесты с PostgreSQL + pgvector, сборка образа
 ```
 
 ## Дальше
@@ -413,7 +461,7 @@ run_app.bat        запуск веб-интерфейса двойным кл�
 - [x] поиск по нормативным документам (RAG на pgvector) с оценкой поиска
 - [x] история диалогов и оценка ответов 👍/👎
 - [x] контекст диалога: уточняющие вопросы («а за январь?») с учётом предыдущих
-- [ ] REST API (FastAPI), Docker Compose, CI
+- [x] REST API (FastAPI), тесты без LLM, CI на GitHub Actions, Docker Compose
 - [ ] сравнение квантизаций (Q4 / Q8 / FP16)
 - [ ] статистические и ML-детекторы (Isolation Forest) в дополнение к правилам
 - [ ] реальные данные ИТП

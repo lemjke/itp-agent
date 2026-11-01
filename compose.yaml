@@ -7,6 +7,7 @@
 
 x-app: &app
   build: .
+  image: itp-agent:latest          # один образ на init, app и api
   environment:
     ITP_DB_DSN: host=db port=5432 dbname=itp_db user=postgres password=${POSTGRES_PASSWORD:-itp}
     ITP_DB_ADMIN_DSN: host=db port=5432 dbname=postgres user=postgres password=${POSTGRES_PASSWORD:-itp}
