@@ -51,15 +51,15 @@ def find_event(finding, events):
     return None
 
 
-def ground_sources(report, trace):
+def ground_sources(report, trace, question=""):
     """Источники норм — только те пункты, которые реально вернул search_norms (без выдуманных ссылок).
 
     Модель может сократить подпись («ПП № 354, п. 4»), поэтому источник засчитывается, если совпадает
     с найденным целиком или совпадают номер пункта и номер документа (511, 354, 1034, 3684).
     В отчёт попадает полная подпись найденного пункта.
     """
-    found = list(dict.fromkeys(r["source"] for s in trace if s.get("tool") == "search_norms"
-                               for r in (s.get("result") or {}).get("results", [])))
+    results = [r for s in trace if s.get("tool") == "search_norms" for r in (s.get("result") or {}).get("results", [])]
+    found = list(dict.fromkeys(r["source"] for r in results))
     kept = []
     for src in map(str, report.get("sources") or []):
         point = re.search(r"п\.\s*([\d()]+)\s*$", src)
@@ -69,12 +69,40 @@ def ground_sources(report, trace):
                             and docs & set(re.findall(r"\b\d{3,4}\b", f))):
                 kept.append(f)
                 break
+    if not kept and results:
+        kept = _source_by_numbers(report.get("answer", ""), question, results)
     return {**report, "sources": list(dict.fromkeys(kept))}
 
 
-def ground(report, trace):
+def _nums(text):
+    """Числа текста: запятая → точка, хвостовые нули дробной части убраны («0,050» = «0.05», «60» = «60»)."""
+    out = set()
+    for n in re.findall(r"\d+(?:[.,]\d+)?", str(text)):
+        n = n.replace(",", ".")
+        out.add(n.rstrip("0").rstrip(".") if "." in n else n)
+    return out
+
+
+def _source_by_numbers(answer, question, results):
+    """Модель не указала источник: берём найденный пункт, в тексте которого есть числа из ответа.
+
+    Числа из вопроса не считаются («55 градусов — это нарушение?»), номера пунктов тоже. Источник ставится,
+    только если такой пункт один: при ничьей (одни и те же 0,05 МПа в двух пунктах) или без совпадений
+    его нет — неверная ссылка хуже отсутствующей.
+    """
+    wanted = _nums(answer) - _nums(question)
+    scores = {}
+    for r in results:
+        body = re.sub(r"^\s*[\d()]+\.\s*", "", r["text"])          # без номера пункта в начале
+        scores[r["source"]] = max(scores.get(r["source"], 0), len(wanted & _nums(body)))
+    top = max(scores.values(), default=0)
+    best = [s for s, v in scores.items() if v == top]
+    return best if top and len(best) == 1 else []
+
+
+def ground(report, trace, question=""):
     """Оставляет только подтверждённые находки. Возвращает (отчёт, число отброшенных)."""
-    report = ground_sources(report, trace)
+    report = ground_sources(report, trace, question)
     events = tool_events(trace)
     kept, used = [], set()
     for f in report.get("findings", []):

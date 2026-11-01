@@ -47,6 +47,21 @@ def test_sources_only_from_search_results():
                               "СанПиН 2.1.3684-21, п. 84"]
 
 
+def test_missing_source_restored_by_numbers_from_answer():
+    trace = [{"tool": "search_norms", "result": {"results": [
+        {"source": "ПТЭ (приказ Минэнерго № 511), п. 128", "text": "128. … не более чем на 5%."},
+        {"source": "СанПиН 2.1.3684-21, п. 84", "text": "84. … не ниже плюс 60 °C и не выше плюс 75 °C."}]}}]
+    out = ground_sources({"answer": "Должна быть от 60 до 75 °C, 55 °C — нарушение.", "sources": []}, trace,
+                         question="Горячая вода 55 градусов — это нарушение?")
+    assert out["sources"] == ["СанПиН 2.1.3684-21, п. 84"]
+    # чисел из выдачи в ответе нет — источник не придумываем
+    assert ground_sources({"answer": "Нужно проверить оборудование.", "sources": []}, trace)["sources"] == []
+    # ничья — тоже без источника
+    tie = [{"tool": "search_norms", "result": {"results": [
+        {"source": "п. 133", "text": "133. … 0,05 МПа (0,5 кгс/см2)"}, {"source": "п. 397", "text": "397. … 0,05 МПа"}]}}]
+    assert ground_sources({"answer": "Не менее чем на 0,05 МПа.", "sources": []}, tie)["sources"] == []
+
+
 def test_no_sources_without_search():
     assert ground_sources({"sources": ["СанПиН 2.1.3684-21, п. 84"]}, TRACE)["sources"] == []
 

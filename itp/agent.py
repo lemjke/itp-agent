@@ -68,8 +68,8 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    на 2 % ниже графика — допустимо?») — тоже вопрос о норме: search_norms, а не detect_anomalies. В ответе
    назови предельное значение из пункта и сравни с ним значение из вопроса.
 7. Сравнение двух периодов одного ИТП («сравни январь и февраль», «стало ли лучше, чем в прошлом месяце»)
-   — вызови compare_periods. В answer назови главные изменения числами из change: часы вне нормы, события,
-   тепло на градусо-сутки. Сырое тепло за период зависит от погоды — сравнивай тепло на градусо-сутки.
+   — вызови compare_periods. В answer перескажи пункты highlights из ответа инструмента — это главные
+   изменения по порядку важности, с их числами; не переставляй числа между показателями.
 8. Отвечай по-русски, коротко и по делу.
 """
 
@@ -497,7 +497,7 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, co
         raw = _safe_json(resp.message.content)
     for key, default in (("answer", ""), ("findings", []), ("recommendations", []), ("sources", [])):
         raw.setdefault(key, default)
-    report, dropped = ground(raw, trace)          # находки без опоры на детекторы отбрасываются
+    report, dropped = ground(raw, trace, f"{original} {question}")   # находки и источники — только из инструментов
     # Сообщения инструментов о сокращении периода доводим до пользователя в любом случае
     notes = list(dict.fromkeys(s["result"]["note"] for s in trace if s["result"].get("note")))
     if notes and "только с" not in report["answer"]:

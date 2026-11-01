@@ -60,6 +60,34 @@ def period_stats(sid, s, e):
     return {k: (round(v, METRICS[k][2]) if k in METRICS and isinstance(v, float) else v) for k, v in stats.items()}
 
 
+def _n(v, d):
+    return f"{v:.{d}f}".replace(".", ",")
+
+
+def highlights(p1, p2, change):
+    """Главные изменения готовыми фразами, по важности: маленькой модели трудно самой выбрать главное
+    из десятка показателей и не перепутать, к какому относится процент."""
+    out = []
+    for k in ("hours_t1_out", "hours_t2_out", "hours_dhw_out", "hours_missing"):
+        ch = change.get(k, {})
+        if ch.get("diff"):
+            label = METRICS[k][0].replace("Часов: ", "")
+            out.append(f"{label[0].upper()}{label[1:]}: {ch['from']} → {ch['to']} ч")
+    types = sorted(set(p1["events_by_type"]) | set(p2["events_by_type"]))
+    for t in types:
+        a, b = p1["events_by_type"].get(t, 0), p2["events_by_type"].get(t, 0)
+        if a != b:
+            out.append(f"Событий «{t.replace('«', '').replace('»', '')}»: {a} → {b}")
+    if not out:
+        out.append("Часов вне нормы и событий детекторов в обоих периодах одинаково")
+    hd, hg, to = change.get("heat_per_degree_day"), change.get("heat_gcal"), change.get("t_outdoor_mean")
+    if hd and hg and to:
+        out.append(f"Тепло на градусо-сутки (с поправкой на погоду): {_n(hd['from'], 3)} → {_n(hd['to'], 3)} "
+                   f"Гкал/(°C·сут), {hd.get('pct', 0):+d} %; сырое тепло {hg.get('pct', 0):+d} % — в основном из-за "
+                   f"погоды (наружная температура {_n(to['from'], 1)} → {_n(to['to'], 1)} °C)")
+    return out
+
+
 def compare_periods(substation, start_1, end_1, start_2, end_2):
     """Сравнить два периода одного ИТП: отклонения от графика, часы вне нормы, тепло, события."""
     sid = _substation_id(substation)
@@ -74,8 +102,8 @@ def compare_periods(substation, start_1, end_1, start_2, end_2):
         change[k] = {"from": a, "to": b, "diff": round(b - a, METRICS[k][2]),
                      **({"pct": round((b - a) / abs(a) * 100)} if a and k.startswith(("heat", "hours", "events"))
                         else {})}
-    res = {"substation": f"ИТП-{sid}", "period_1": p1, "period_2": p2, "change": change,
-           "units": {k: v[1] for k, v in METRICS.items()}}
+    res = {"substation": f"ИТП-{sid}", "highlights": highlights(p1, p2, change), "period_1": p1, "period_2": p2,
+           "change": change, "units": {k: v[1] for k, v in METRICS.items()}}
     notes = [n for n in (note1, note2) if n]
     if notes:
         res["note"] = " ".join(notes)
