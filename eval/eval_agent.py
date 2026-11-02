@@ -52,10 +52,12 @@ def evaluate_compare(scn, row, result):
                      for s in result["trace"])
     mentioned = any(k in row["answer"].lower() for k in scn["keywords"])
     unverified = result.get("unverified_numbers", [])
-    row["correct"] = not row["error"] and called and mentioned and not unverified
+    wrong = [f"{m['number']} → {m['said']}" for m in result.get("misattributed", [])]
+    row["correct"] = not row["error"] and called and mentioned and not unverified and not wrong
     row["notes"] += ([] if called else ["compare_periods не вызван или не те периоды"]) + \
                     ([] if mentioned else [f"нет главного изменения ({'/'.join(scn['keywords'])})"]) + \
-                    ([f"непроверенные числа {unverified}"] if unverified else [])
+                    ([f"непроверенные числа {unverified}"] if unverified else []) + \
+                    ([f"число не того показателя {wrong}"] if wrong else [])
     return row
 
 
@@ -110,7 +112,8 @@ def evaluate(scn, truth, model=LLM_MODEL, arch="react", **ask_kw):
            "expected": 0, "tp": 0, "category_ok": 0, "requirement_ok": 0, "coverage": None,
            "missed": [], "extra": [], "wrong_category": [], "notes": [],
            "trace": [{"tool": s["tool"], "args": s["args"]} for s in result["trace"]], "report": report,
-           "understood_as": result.get("question", scn["question"])}
+           "understood_as": result.get("question", scn["question"]),
+           "misattributed": [f"{m['number']}: {m['said']} ≠ {m['actually']}" for m in result.get("misattributed", [])]}
 
     if kind == "offtopic":
         row["correct"] = not error and not findings
@@ -186,6 +189,7 @@ def summarize(rows):
         "values": sum(r["type"] == "value" for r in rows),
         "offtopic_correct": sum(r["correct"] for r in rows if r["type"] == "offtopic"),
         "offtopic": sum(r["type"] == "offtopic" for r in rows),
+        "misattributed_answers": sum(bool(r.get("misattributed")) for r in rows),
         "norms_correct": sum(r["correct"] for r in rows if r["type"] == "norm"),
         "norms": sum(r["type"] == "norm" for r in rows),
         "mean_seconds": sum(r["seconds"] for r in rows) / len(rows),

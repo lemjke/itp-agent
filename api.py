@@ -45,6 +45,7 @@ class AskResponse(BaseModel):
     sources: list[str] = Field(description="Пункты нормативных документов, найденные поиском")
     dropped_findings: int = Field(description="Сколько находок модели отброшено проверкой")
     unverified_numbers: list[str] = Field(description="Числа ответа, которых нет в данных инструментов")
+    misattributed: list[dict] = Field(default=[], description="Числа из данных, приписанные не тому показателю")
     tool_calls: list[ToolCall]
     seconds: float
 
@@ -60,6 +61,8 @@ def _response(chat_id, message_id, asked, result):
         answer=report["answer"], findings=report.get("findings", []),
         recommendations=report.get("recommendations", []), sources=report.get("sources", []),
         dropped_findings=result.get("dropped_findings", 0), unverified_numbers=result.get("unverified_numbers", []),
+        misattributed=[{**m, "said": str(m["said"]), "actually": [str(a) for a in m["actually"]]}
+                       for m in result.get("misattributed", [])],
         tool_calls=[ToolCall(tool=s["tool"], args=s["args"]) for s in result["trace"]],
         seconds=result["seconds"])
 

@@ -11,6 +11,7 @@ import ollama
 import pandas as pd
 
 from .config import LLM_HOST, LLM_MODEL, NOW
+from .attribution import misattributed
 from .grounding import ground
 from .compare import compare_periods
 from .tools import TOOLS as BASE_TOOLS, ToolError, _by_address
@@ -505,6 +506,7 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, co
     emit("report", report)
     return {"report": report, "trace": trace, "dropped_findings": dropped,
             "unverified_numbers": unverified_numbers(report, f"{original} {question}", trace),
+            "misattributed": misattributed(report["answer"], trace),
             "off_topic": False, "asked": original, "question": question, "seconds": round(time.time() - t0, 1)}
 
 

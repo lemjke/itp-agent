@@ -74,6 +74,9 @@ def render_result(result, key):
     if result.get("unverified_numbers"):
         checks.append("в ответе есть числа, которых нет в данных инструментов: "
                       + ", ".join(result["unverified_numbers"]) + " — проверьте их")
+    for m in result.get("misattributed", []):
+        checks.append(f"число {m['number'].replace('.', ',')} во фразе «{m['clause'][:70]}» относится к другому "
+                      "показателю — сверьте с ходом работы")
     if checks:
         st.warning("Проверка ответа: " + "; ".join(checks), icon="⚠️")
 
