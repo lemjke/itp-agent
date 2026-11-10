@@ -313,8 +313,9 @@ def _collect_react(client, model, messages, options, emit, chat_kw):
         msg = resp.message
         messages.append(msg)
         if not msg.tool_calls:
-            # Вопрос с названным ИТП — не вне темы, даже если модель ответила текстом без инструментов
-            if not trace and not nudged and (_SUBSTATION.search(question) or _by_address(question)):
+            # Вопрос с названным ИТП или о нормах — не вне темы, даже если модель ответила текстом без инструментов
+            if not trace and not nudged and (_SUBSTATION.search(question) or _NORM_TOPIC.search(question)
+                                                or _by_address(question)):
                 nudged = True
                 emit("retry", {"error": "ответ без инструментов на вопрос об ИТП"})
                 messages.append({"role": "user", "content": "Это вопрос о тепловых пунктах — ответь на него "
@@ -416,7 +417,9 @@ REWRITE_INSTRUCTION = (
 # Проверяется кодом: модель иногда «уточняла» и такие вопросы, подставляя чужие даты.
 _PERIOD = re.compile(r"недел|\bдн[еяи]|вчера|сегодня|январ|феврал|март|декабр|зим|\d{1,2}\s*(?:по|-|—)\s*\d{1,2}|"
                      r"\d{4}-\d\d|week|january|february|december|yesterday|today", re.I)
-_SUBSTATION = re.compile(r"итп\s*[-№]?\s*\d|тепловы\w* пункт|substation", re.I)
+_SUBSTATION = re.compile(r"итп\s*[-№]?\s*\d|теплов\w* пункт|substation", re.I)
+# Вопрос о нормах — тоже по теме, даже без номера ИТП («что по правилам должно быть сделано…»)
+_NORM_TOPIC = re.compile(r"\bнорм|по правилам|допуст|санпин|\bптэ\b", re.I)
 # Отсылка, которой не заменят названные ИТП и период; «там», «она» при них — разговорные, не отсылки
 # («чо там с итп 2 10 февраля»)
 _REFERENCE = re.compile(r"\b(?:тот же|того же|то же|той же|тех же)\b", re.I)
