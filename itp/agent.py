@@ -6,6 +6,7 @@
 import json
 import re
 import time
+from contextvars import ContextVar
 
 import ollama
 import pandas as pd
@@ -19,6 +20,9 @@ from .tools import TOOLS as BASE_TOOLS, ToolError, _by_address
 TOOLS = {**BASE_TOOLS, "compare_periods": compare_periods}
 
 MAX_STEPS = 8
+# Вопрос пользователя для search_norms: модель, пересказывая его «официальными терминами», теряла главное
+# слово («допуск»), и нужный пункт не находился. Поиск идёт по обеим формулировкам.
+_USER_QUESTION = ContextVar("user_question", default="")
 
 
 def _days_back(n):
@@ -31,7 +35,10 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
 Текущий момент: {NOW}. Текущий год — {NOW[:4]}; если в вопросе год не указан, это {NOW[:4]} год.
 Относительные периоды отсчитывай от текущего момента включительно: «последняя неделя» — {_days_back(7)},
 «последние 3 дня» — {_days_back(3)}, «вчера» — {_days_back(2)[:10]}.
-Месяцы: «в январе» — {NOW[:4]}-01-01 — {NOW[:4]}-01-31, «в феврале» — {NOW[:4]}-02-01 — {NOW[:4]}-02-28.
+Месяцы: «в январе» — {NOW[:4]}-01-01 — {NOW[:4]}-01-31, «в феврале» — {NOW[:4]}-02-01 — {NOW[:4]}-02-28,
+«в декабре» — {int(NOW[:4]) - 1}-12-01 — {int(NOW[:4]) - 1}-12-31; «зима», «за всю зиму» — {int(NOW[:4]) - 1}-12-01 —
+{NOW[:4]}-02-28. Передавай период так, как спросили, даже если данных за его часть нет: инструмент сам сократит
+период и сообщит об этом в note.
 
 Как работать:
 1. Всегда опирайся на инструменты. Ничего не вычисляй сам и не придумывай чисел — бери их из ответов инструментов.
@@ -64,12 +71,16 @@ SYSTEM_PROMPT = f"""Ты — ассистент инженера по экспл
    «что делать по правилам…») — вызови search_norms. В query пиши официальными терминами документов:
    «подающий трубопровод», а не «подача»; «обратный трубопровод», а не «обратка»; «горячее водоснабжение»,
    «тепловой пункт», «узел учёта». Отвечай только по тексту найденных пунктов и называй источник ровно так,
-   как в поле source. Если в найденных пунктах ответа нет — так и скажи, не додумывай.
+   как в поле source. Если в найденных пунктах ответа нет — так и скажи, не додумывай. Если пункт
+   перечисляет несколько случаев (обычный перерыв, авария, ремонт), отвечай только про случай из вопроса:
+   предельные значения других случаев не выдавай за ответ.
    Вопрос о допустимости значения без ИТП и периода («давление 0,7 МПа в кране — это нормально?», «подача
    на 2 % ниже графика — допустимо?») — тоже вопрос о норме: search_norms, а не detect_anomalies. В ответе
    назови предельное значение из пункта и сравни с ним значение из вопроса.
-7. Сравнение двух периодов одного ИТП («сравни январь и февраль», «стало ли лучше, чем в прошлом месяце»)
-   — вызови compare_periods. В answer перескажи пункты highlights из ответа инструмента — это главные
+7. Сравнение двух разных периодов одного ИТП («сравни январь и февраль», «стало ли лучше, чем в прошлом
+   месяце») — вызови compare_periods; первым периодом передавай более ранний. Проверка за один период, даже длинный («проверь с декабря по февраль»,
+   «за всю зиму»), — это detect_anomalies, а не сравнение. Сравнение двух ИТП между собой («у кого хуже»,
+   «где больше проблем») — detect_anomalies для каждого ИТП за этот период. В answer перескажи пункты highlights из ответа инструмента — это главные
    изменения по порядку важности, с их числами; не переставляй числа между показателями.
 8. Отвечай по-русски, коротко и по делу.
 """
@@ -210,6 +221,8 @@ def _run_tool(name, args):
     if fn is None:
         return {"error": f"Нет инструмента {name}"}
     try:
+        if name == "search_norms":
+            return fn(**(args or {}), question=_USER_QUESTION.get())
         return fn(**(args or {}))
     except ToolError as exc:
         return {"error": str(exc)}
@@ -294,11 +307,19 @@ def _execute(name, args, trace, messages, emit):
 def _collect_react(client, model, messages, options, emit, chat_kw):
     trace = []
     last_error, nudged = None, False
+    question = messages[-1]["content"]
     for _ in range(MAX_STEPS):
         resp = client.chat(model=model, messages=messages, tools=TOOL_SCHEMAS, options=options, **chat_kw)
         msg = resp.message
         messages.append(msg)
         if not msg.tool_calls:
+            # Вопрос с названным ИТП — не вне темы, даже если модель ответила текстом без инструментов
+            if not trace and not nudged and (_SUBSTATION.search(question) or _by_address(question)):
+                nudged = True
+                emit("retry", {"error": "ответ без инструментов на вопрос об ИТП"})
+                messages.append({"role": "user", "content": "Это вопрос о тепловых пунктах — ответь на него "
+                                                            "с помощью инструментов."})
+                continue
             # Модель сдаётся после ошибки инструмента — один раз просим исправить вызов
             if last_error and not nudged:
                 nudged = True
@@ -474,6 +495,7 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, co
                          {"role": "assistant", "content": h["answer"][:HISTORY_ANSWER_CHARS]}]
     messages.append({"role": "user", "content": question})
 
+    _USER_QUESTION.set(question)
     trace = COLLECTORS[arch](client, model, messages, options, emit, chat_kw)
 
     if not trace:
@@ -499,15 +521,41 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, co
     for key, default in (("answer", ""), ("findings", []), ("recommendations", []), ("sources", [])):
         raw.setdefault(key, default)
     report, dropped = ground(raw, trace, f"{original} {question}")   # находки и источники — только из инструментов
+    norms = [r for s in trace if s["tool"] == "search_norms" for r in s["result"].get("results", [])]
+    if norms and not report["sources"]:
+        # Ответ по нормам без источника, и восстановить его по тексту не удалось — один раз просим указать
+        emit("retry", {"error": "ответ по нормам без источника"})
+        messages += [{"role": "assistant", "content": resp.message.content},
+                     {"role": "user", "content": "В sources не указан пункт, на котором основан answer. Повтори "
+                                                 "отчёт, указав в sources этот пункт ровно как в поле source."}]
+        resp = client.chat(model=model, messages=messages, format=REPORT_SCHEMA, options=final_opts, **chat_kw)
+        retry = _safe_json(resp.message.content)
+        if retry.get("answer"):
+            retry = {"findings": [], "recommendations": [], "sources": [], **retry}
+            report, dropped = ground(retry, trace, f"{original} {question}")
+    checked = misattributed(report["answer"], trace)        # до добавления текста инструментов
     # Сообщения инструментов о сокращении периода доводим до пользователя в любом случае
     notes = list(dict.fromkeys(s["result"]["note"] for s in trace if s["result"].get("note")))
     if notes and "только с" not in report["answer"]:
         report["answer"] += "\n\nℹ️ " + " ".join(n.replace(" Сообщи это пользователю.", "") for n in notes)
+    report["answer"] += _missing_highlights(report["answer"], trace)
     emit("report", report)
     return {"report": report, "trace": trace, "dropped_findings": dropped,
             "unverified_numbers": unverified_numbers(report, f"{original} {question}", trace),
-            "misattributed": misattributed(report["answer"], trace),
+            "misattributed": checked,
             "off_topic": False, "asked": original, "question": question, "seconds": round(time.time() - t0, 1)}
+
+
+def _missing_highlights(answer, trace):
+    """Главное изменение из compare_periods, если модель его не пересказала (отвечала одной фразой про
+    тепло на градусо-сутки, пропуская часы вне нормы). Добавляется готовым текстом инструмента."""
+    highs = [h for s in trace if s["tool"] == "compare_periods" for h in s["result"].get("highlights", [])]
+    if not highs:
+        return ""
+    top = highs[0]                       # «Обратка выше графика более 5 %: 0 → 175 ч»
+    if top.split()[0].lower()[:5] in answer.lower() and _numbers(top.split("→")[-1]) <= _numbers(answer):
+        return ""
+    return "\n\nГлавные изменения:\n" + "\n".join(f"- {h}" for h in highs)
 
 
 CATEGORY_RU = {"sensor_fault": "неисправность измерений", "regime_violation": "нарушение режима",

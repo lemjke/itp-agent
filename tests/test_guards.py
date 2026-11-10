@@ -1,5 +1,5 @@
 """Проверки ответа модели (guardrails): находки, источники, числа."""
-from itp.agent import PLACEHOLDER, _numbers, unverified_numbers
+from itp.agent import PLACEHOLDER, _missing_highlights, _numbers, unverified_numbers
 from itp.grounding import ground, ground_sources
 
 EVENT = {"substation": "ИТП-3", "parameter": "t2", "start": "2026-02-21 00:00", "end": "2026-02-27 23:00",
@@ -82,3 +82,23 @@ def test_unverified_numbers_are_those_absent_from_tools_and_question():
 def test_placeholder_detected():
     assert PLACEHOLDER.search("Средняя — ${period_summary.t2.mean} °C")
     assert not PLACEHOLDER.search("Средняя — 53,8 °C")
+
+
+def test_missing_source_restored_by_citation_in_answer():
+    trace = [{"tool": "search_norms", "result": {"results": [
+        {"source": "ПТЭ (приказ Минэнерго № 511), п. 127", "text": "127. … 3%; … 5%"},
+        {"source": "ПТЭ (приказ Минэнерго № 511), п. 128", "text": "128. … не более чем на 5%."}]}}]
+    answer = "Согласно приказу Минэнерго № 511, п. 128, обратка не должна быть выше графика более чем на 5%."
+    out = ground_sources({"answer": answer, "sources": []}, trace, question="Обратка на 4% выше — допустимо?")
+    assert out["sources"] == ["ПТЭ (приказ Минэнерго № 511), п. 128"]
+    # пункт без документа рядом — не ссылка
+    assert ground_sources({"answer": "См. п. 128.", "sources": []}, trace)["sources"] == []
+
+
+def test_missing_highlight_appended_only_when_absent():
+    trace = [{"tool": "compare_periods", "result": {"highlights": [
+        "Обратка выше графика более 5 %: 0 → 175 ч", "Тепло на градусо-сутки: 0,232 → 0,223"]}}]
+    assert _missing_highlights("Обратка была выше графика 175 часов в феврале.", trace) == ""
+    added = _missing_highlights("Тепло на градусо-сутки снизилось на 4%.", trace)
+    assert "Главные изменения" in added and "0 → 175 ч" in added
+    assert _missing_highlights("Что-то", [{"tool": "detect_anomalies", "result": {}}]) == ""

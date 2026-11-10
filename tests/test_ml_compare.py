@@ -57,3 +57,13 @@ def test_compare_periods_validates_dates():
     from itp.compare import compare_periods
     with pytest.raises(ToolError):
         compare_periods("ИТП-3", "2023-01-01", "2023-01-31", "2026-02-01", "2026-02-28")
+
+
+@pytest.mark.db
+def test_compare_rejects_overlap_and_all():
+    from itp.compare import compare_periods
+    from itp.tools import ToolError
+    with pytest.raises(ToolError, match="пересекаются"):
+        compare_periods("ИТП-5", "2025-12-01", "2026-02-28", "2025-12-01", "2026-01-31")
+    with pytest.raises(ToolError, match="detect_anomalies"):
+        compare_periods("все", "2026-01-01", "2026-01-31", "2026-02-01", "2026-02-28")

@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import ml_detect
-from .tools import _fmt, _load, _period, _substation_id, detect_events
+from .tools import ToolError, _fmt, _load, _period, _substation_id, detect_events
 
 T_INSIDE = 20.0
 EVENT_RU = {"data_gap": "пропуски данных", "frozen_value": "«замёрзшие» показания", "spike": "выбросы",
@@ -90,9 +90,15 @@ def highlights(p1, p2, change):
 
 def compare_periods(substation, start_1, end_1, start_2, end_2):
     """Сравнить два периода одного ИТП: отклонения от графика, часы вне нормы, тепло, события."""
+    if str(substation).strip().lower() in ("все", "all", "*"):
+        raise ToolError("compare_periods сравнивает два периода одного ИТП. Чтобы сравнить ИТП между собой, "
+                        "вызови detect_anomalies для каждого ИТП за этот период.")
     sid = _substation_id(substation)
     s1, e1, note1 = _period(start_1, end_1)
     s2, e2, note2 = _period(start_2, end_2)
+    if s1 <= e2 and s2 <= e1:
+        raise ToolError("Периоды пересекаются — это не сравнение двух периодов. Чтобы проверить ИТП за один "
+                        "период, вызови detect_anomalies с этим периодом.")
     p1, p2 = period_stats(sid, s1, e1), period_stats(sid, s2, e2)
     change = {}
     for k in METRICS:

@@ -70,8 +70,22 @@ def ground_sources(report, trace, question=""):
                 kept.append(f)
                 break
     if not kept and results:
-        kept = _source_by_numbers(report.get("answer", ""), question, results)
+        kept = _source_by_citation(report.get("answer", ""), found) or \
+            _source_by_numbers(report.get("answer", ""), question, results)
     return {**report, "sources": list(dict.fromkeys(kept))}
+
+
+def _source_by_citation(answer, found):
+    """Источник назван в тексте ответа («приказ Минэнерго № 511, п. 128»), но не в sources.
+
+    Номер пункта должен стоять рядом с номером документа; засчитывается, только если подходит один пункт.
+    """
+    out = []
+    for m in re.finditer(r"(?:п\.|пункт[еау]?)\s*(\d+)", answer):
+        docs = set(re.findall(r"\b\d{3,4}\b", answer[max(0, m.start() - 120):m.end() + 120])) - {m.group(1)}
+        out += [f for f in found if f.endswith(f"п. {m.group(1)}") and docs & set(re.findall(r"\b\d{3,4}\b", f))]
+    out = list(dict.fromkeys(out))
+    return out if len(out) == 1 else []
 
 
 def _nums(text):

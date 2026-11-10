@@ -398,13 +398,21 @@ def get_requirement(code):
     return req
 
 
-def search_norms(query, k=5):
-    """Пункты нормативных документов, ближайшие к запросу по смыслу (RAG, см. itp/rag.py)."""
+def search_norms(query, k=5, question=""):
+    """Пункты нормативных документов, ближайшие к запросу по смыслу (RAG, см. itp/rag.py).
+
+    question — исходный вопрос пользователя (передаёт агент): результаты двух поисков чередуются,
+    начиная с вопроса пользователя, повторы убираются.
+    """
     query = str(query or "").strip()
     if len(query) < 5:
         raise ToolError("Нужен запрос — о чём норма, например 'допустимое отклонение температуры "
                         "в подающем трубопроводе от температурного графика'.")
-    hits = rag.search(query, k=max(1, min(int(k), 5)), mode="vector")
+    k = max(1, min(int(k), 5))
+    hits = rag.search(query, k=k, mode="vector")
+    if question and question.strip() != query:
+        mixed = [h for pair in zip(rag.search(question, k=k, mode="vector"), hits) for h in pair]
+        hits = list({h["source"]: h for h in mixed}.values())[:k + 1]
     return {"query": query, "results": [{"source": h["source"], "text": h["text"][:1200]} for h in hits]}
 
 
