@@ -539,11 +539,42 @@ def ask(question, on_event=None, model=LLM_MODEL, arch="react", history=None, co
     if notes and "только с" not in report["answer"]:
         report["answer"] += "\n\nℹ️ " + " ".join(n.replace(" Сообщи это пользователю.", "") for n in notes)
     report["answer"] += _missing_highlights(report["answer"], trace)
+    report["answer"] += _corrected_times(report["findings"])
+    report["answer"] += _missing_norm_text(report["answer"], report["sources"], trace, f"{original} {question}")
     emit("report", report)
     return {"report": report, "trace": trace, "dropped_findings": dropped,
             "unverified_numbers": unverified_numbers(report, f"{original} {question}", trace),
             "misattributed": checked,
             "off_topic": False, "asked": original, "question": question, "seconds": round(time.time() - t0, 1)}
+
+
+def _corrected_times(findings):
+    """Время находки, которое проверка взяла из события вместо названного моделью (см. grounding.ground)."""
+    fixed = [f for f in findings if f.get("time_corrected")]
+    if not fixed:
+        return ""
+    when = "; ".join(f"{f['substation']}, {f['start']}" + (f" — {f['end']}" if f["end"] != f["start"] else "")
+                     for f in fixed)
+    return f"\n\nℹ️ Время по данным детектора: {when}."
+
+
+def _missing_norm_text(answer, sources, trace, question):
+    """Ответ сослался на пункт, но не назвал его значения («ниже минимума» без 60 °C): добавляем фразу пункта.
+
+    Берутся только предложения с числами, которых нет в вопросе; номер пункта в начале текста не считается.
+    """
+    texts = {r["source"]: r["text"] for s in trace if s["tool"] == "search_norms"
+             for r in s["result"].get("results", [])}
+    out = []
+    for src in sources:
+        body = re.sub(r"^\s*[\d()]+\.\s*", "", texts.get(src, ""))
+        values = _numbers(body) - _numbers(question)
+        if not values or values & _numbers(answer):
+            continue
+        sentences = [x.strip() for x in re.split(r"(?<=[.;])\s+|\s\|\s", body) if _numbers(x) - _numbers(question)]
+        quote = " ".join(sentences)[:300]
+        out.append(f"\n\n{src}: «{quote}»")
+    return "".join(out)
 
 
 def _missing_highlights(answer, trace):

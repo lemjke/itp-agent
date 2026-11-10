@@ -120,11 +120,18 @@ def ground(report, trace, question=""):
     events = tool_events(trace)
     kept, used = [], set()
     for f in report.get("findings", []):
-        ev = find_event(f, events)
+        ev, shifted = find_event(f, events), False
+        if ev is None:
+            # Модель ошиблась со временем (сдвиг на полсуток), но у этого ИТП и параметра событие одно —
+            # значит, речь о нём: даты берём из события, а в ответ добавляем верное время
+            same = [e for e in events if id(e) not in used and _sid(e["substation"]) == _sid(f.get("substation"))
+                    and _param_ok(f.get("parameter", ""), e["parameter"])]
+            ev, shifted = (same[0], True) if len(same) == 1 else (None, False)
         if ev is None or id(ev) in used:          # нет опоры или дубликат одного события
             continue
         used.add(id(ev))
-        kept.append({**f, "substation": ev["substation"], "parameter": ev["parameter"],
+        kept.append({**f, **({"time_corrected": True} if shifted else {}),
+                     "substation": ev["substation"], "parameter": ev["parameter"],
                      "start": ev["start"], "end": ev["end"],
                      "requirement_code": ev["requirement"]["code"],
                      "requirement_source": ev["requirement"]["source"]})

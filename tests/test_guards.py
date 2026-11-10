@@ -1,5 +1,5 @@
 """Проверки ответа модели (guardrails): находки, источники, числа."""
-from itp.agent import PLACEHOLDER, _missing_highlights, _numbers, unverified_numbers
+from itp.agent import PLACEHOLDER, _corrected_times, _missing_highlights, _missing_norm_text, _numbers, unverified_numbers
 from itp.grounding import ground, ground_sources
 
 EVENT = {"substation": "ИТП-3", "parameter": "t2", "start": "2026-02-21 00:00", "end": "2026-02-27 23:00",
@@ -102,3 +102,20 @@ def test_missing_highlight_appended_only_when_absent():
     added = _missing_highlights("Тепло на градусо-сутки снизилось на 4%.", trace)
     assert "Главные изменения" in added and "0 → 175 ч" in added
     assert _missing_highlights("Что-то", [{"tool": "detect_anomalies", "result": {}}]) == ""
+
+
+def test_shifted_time_snaps_to_single_event_of_same_parameter():
+    report, dropped = ground({"findings": [finding(start="2026-02-10", end="2026-02-10")]}, TRACE)
+    assert dropped == 0 and report["findings"][0]["start"] == EVENT["start"]
+    assert "2026-02-21 00:00" in _corrected_times(report["findings"])
+    two = [{"tool": "detect_anomalies", "args": {}, "result": {"events": [EVENT, {**EVENT, "start": "2026-01-05 00:00",
+                                                                                  "end": "2026-01-06 00:00"}]}}]
+    assert ground({"findings": [finding(start="2026-02-10", end="2026-02-10")]}, two)[1] == 1   # кандидатов два
+
+
+def test_norm_text_added_only_when_answer_lacks_its_values():
+    trace = [{"tool": "search_norms", "args": {}, "result": {"results": [{"source": "СанПиН 2.1.3684-21, п. 84",
+             "text": "84. Температура горячей воды должна быть не ниже плюс 60 °C и не выше плюс 75 °C."}]}}]
+    src, q = ["СанПиН 2.1.3684-21, п. 84"], "Горячая вода 55 градусов — это нарушение?"
+    assert "60 °C" in _missing_norm_text("55 °C ниже минимума по СанПиН, п. 84.", src, trace, q)
+    assert _missing_norm_text("Норма — не ниже 60 °C.", src, trace, q) == ""
